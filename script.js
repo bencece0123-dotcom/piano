@@ -8,7 +8,7 @@
   const SCORE_END_PADDING = 18;
   const NOTE_EDGE_PADDING = 24;
   const STEM_LENGTH = 42;
-  const RHYTHM_QUANTUM = 0.25;
+  const RHYTHM_QUANTUM = window.MelodyRhythm?.STRAIGHT_STEP || 0.125;
   const MIN_REST_BEATS = 1.25;
   const REST_CONFIRM_DELAY_MS = 350;
   const TIME_SIGNATURES = ["4/4", "2/2", "6/8", "3/4", "2/4", "12/8", "9/8", "5/4", "7/4", "3/8", "5/8", "7/8", "8/8"];
@@ -20,7 +20,9 @@
     { beats: 1, name: "quarter note", slug: "quarter", open: false, stem: true, flags: 0, dotted: false },
     { beats: 0.75, name: "dotted eighth note", slug: "dotted-eighth", open: false, stem: true, flags: 1, dotted: true },
     { beats: 0.5, name: "eighth note", slug: "eighth", open: false, stem: true, flags: 1, dotted: false },
-    { beats: 0.25, name: "sixteenth note", slug: "sixteenth", open: false, stem: true, flags: 2, dotted: false }
+    { beats: 0.375, name: "dotted sixteenth note", slug: "dotted-sixteenth", open: false, stem: true, flags: 2, dotted: true },
+    { beats: 0.25, name: "sixteenth note", slug: "sixteenth", open: false, stem: true, flags: 2, dotted: false },
+    { beats: 0.125, name: "thirty-second note", slug: "thirty-second", open: false, stem: true, flags: 3, dotted: false }
   ];
   const FLAT_SPELLINGS = { "C#": "Db", "D#": "Eb", "F#": "Gb", "G#": "Ab", "A#": "Bb" };
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -180,8 +182,8 @@
       const names = group.notes.map((note) => displayNote(note.spelling || note.note));
       const pitches = names.length > 1 ? `[${names.join(" + ")}]` : names[0];
       const durations = new Set(group.notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
-      if (durations.size === 1) return `${pitches} — ${durationName(group.notes[0].durationBeats || RHYTHM_QUANTUM)}`;
-      return `[${group.notes.map((note) => `${displayNote(note.spelling || note.note)} — ${durationName(note.durationBeats || RHYTHM_QUANTUM)}`).join("; ")}]`;
+      if (durations.size === 1) return `${pitches} — ${recordedDurationName(group.notes[0])}`;
+      return `[${group.notes.map((note) => `${displayNote(note.spelling || note.note)} — ${recordedDurationName(note)}`).join("; ")}]`;
     });
   }
 
@@ -220,14 +222,22 @@
   }
 
   function quantizeBeat(value) {
-    return Math.round(value / RHYTHM_QUANTUM) * RHYTHM_QUANTUM;
+    return window.MelodyRhythm
+      ? window.MelodyRhythm.quantizeStraight(value, RHYTHM_QUANTUM)
+      : Math.round(value / RHYTHM_QUANTUM) * RHYTHM_QUANTUM;
+  }
+
+  function cleanBeat(value) {
+    return window.MelodyRhythm
+      ? window.MelodyRhythm.cleanBeat(value)
+      : Math.round(value * 1000000) / 1000000;
   }
 
   function nextCompositionBeat() {
     const noteEnd = state.notes.length
       ? Math.max(...state.notes.map((note) => note.startBeat + (note.durationBeats || 1)))
       : 0;
-    return quantizeBeat(Math.max(noteEnd, state.timelineEndBeat || 0));
+    return cleanBeat(Math.max(noteEnd, state.timelineEndBeat || 0));
   }
 
   function latestOnsetBeat() {
@@ -255,19 +265,105 @@
     if (!recordingClock) {
       recordingClock = { startedAt, startBeat: nextCompositionBeat() };
     }
-    let startBeat = quantizeBeat(
+    const rawStartBeat = cleanBeat(
       recordingClock.startBeat + quarterUnitsFromMs(startedAt - recordingClock.startedAt)
     );
+    let startBeat = quantizeBeat(rawStartBeat);
     if (lastOnsetBeat !== null) startBeat = Math.max(startBeat, lastOnsetBeat + RHYTHM_QUANTUM);
-    currentOnsetWindow = { id: createOnsetId(), startedAt, startBeat };
+    currentOnsetWindow = { id: createOnsetId(), startedAt, rawStartBeat, startBeat: cleanBeat(startBeat) };
     lastOnsetBeat = startBeat;
     return currentOnsetWindow;
+  }
+
+  function clearTupletMetadata(recordedNote) {
+    delete recordedNote.tupletId;
+    delete recordedNote.tupletIndex;
+    delete recordedNote.tupletCount;
+    delete recordedNote.tupletNotesOccupied;
+    delete recordedNote.tupletBaseSlug;
+    delete recordedNote.tupletBaseDuration;
+    delete recordedNote.tupletUnitBeats;
+  }
+
+  function applyRecognizedRhythm() {
+    if (!window.MelodyRhythm) return;
+    const groups = onsetGroups();
+    const performedGroups = groups
+      .map((group) => {
+        const rawStarts = group.notes
+          .map((note) => note.rawStartBeat)
+          .filter(Number.isFinite);
+        return rawStarts.length
+          ? { ...group, rawStartBeat: Math.min(...rawStarts) }
+          : null;
+      })
+      .filter(Boolean);
+    if (!performedGroups.length) return;
+
+    const recognized = window.MelodyRhythm.recognizeOnsets(performedGroups);
+    const recognitionById = new Map(recognized.map((item) => [item.id, item]));
+    const startByOnsetId = new Map();
+
+    performedGroups.forEach((group) => {
+      const rhythm = recognitionById.get(group.id);
+      if (!rhythm) return;
+      startByOnsetId.set(group.id, rhythm.startBeat);
+      group.notes.forEach((recordedNote) => {
+        recordedNote.startBeat = rhythm.startBeat;
+        clearTupletMetadata(recordedNote);
+        const rawDuration = Number.isFinite(recordedNote.rawDurationBeats)
+          ? recordedNote.rawDurationBeats
+          : recordedNote.durationBeats;
+        recordedNote.durationBeats = Math.max(RHYTHM_QUANTUM, quantizeBeat(rawDuration));
+        if (rhythm.tuplet) {
+          recordedNote.durationBeats = rhythm.tuplet.unitBeats;
+          recordedNote.tupletId = rhythm.tuplet.id;
+          recordedNote.tupletIndex = rhythm.tuplet.index;
+          recordedNote.tupletCount = rhythm.tuplet.count;
+          recordedNote.tupletNotesOccupied = rhythm.tuplet.notesOccupied;
+          recordedNote.tupletBaseSlug = rhythm.tuplet.baseSlug;
+          recordedNote.tupletBaseDuration = rhythm.tuplet.baseDuration;
+          recordedNote.tupletUnitBeats = rhythm.tuplet.unitBeats;
+        }
+      });
+    });
+
+    performedGroups.forEach((group) => {
+      group.notes.forEach((recordedNote) => {
+        if (recordedNote.tupletCount || !recordedNote.joinToOnsetId) return;
+        const joinedOnset = startByOnsetId.get(recordedNote.joinToOnsetId)
+          ?? state.notes.find((note) => note.onsetId === recordedNote.joinToOnsetId)?.startBeat;
+        if (!Number.isFinite(joinedOnset) || joinedOnset <= recordedNote.startBeat) return;
+        recordedNote.durationBeats = Math.max(
+          recordedNote.durationBeats,
+          cleanBeat(joinedOnset - recordedNote.startBeat)
+        );
+      });
+    });
+
+    performedGroups.flatMap((group) => group.notes).forEach((recordedNote) => {
+      recordedNote.duration = millisecondsFromQuarterUnits(recordedNote.durationBeats) / 1000;
+    });
+    const latest = recognized.at(-1);
+    if (latest && recordingClock) lastOnsetBeat = latest.startBeat;
+    if (latest && currentOnsetWindow) {
+      const current = recognitionById.get(currentOnsetWindow.id);
+      if (current) currentOnsetWindow.startBeat = current.startBeat;
+    }
   }
 
   function durationName(beats) {
     const exact = NOTE_VALUES.find((value) => Math.abs(value.beats - beats) < 0.001);
     if (exact) return exact.name;
     return `${Number(beats.toFixed(2))} beats (tied)`;
+  }
+
+  function recordedDurationName(recordedNote) {
+    if (recordedNote.tupletCount) {
+      const baseName = recordedNote.tupletBaseSlug === "eighth" ? "eighth notes" : "sixteenth notes";
+      return `${recordedNote.tupletCount}-note tuplet in ${baseName}`;
+    }
+    return durationName(recordedNote.durationBeats || RHYTHM_QUANTUM);
   }
 
   function tempoWord() {
@@ -337,7 +433,9 @@
               onsetId = `restored-onset-${index}-${Date.now()}`;
             }
             if (!restoredOnsets.has(onsetId)) {
-              const startBeat = Number.isFinite(item.startBeat) ? Math.max(0, quantizeBeat(item.startBeat)) : restoredBeat;
+              const startBeat = Number.isFinite(item.startBeat)
+                ? Math.max(0, item.tupletCount ? cleanBeat(item.startBeat) : quantizeBeat(item.startBeat))
+                : restoredBeat;
               restoredOnsets.set(onsetId, startBeat);
               restoredBeat = Math.max(restoredBeat, startBeat + 1);
             }
@@ -352,9 +450,17 @@
               midi: noteByName.get(item.note).midi,
               duration: Number.isFinite(item.duration) ? item.duration : 0.5,
               durationBeats: Number.isFinite(item.durationBeats)
-                ? Math.max(RHYTHM_QUANTUM, quantizeBeat(item.durationBeats))
+                ? Math.max(
+                  item.tupletUnitBeats || RHYTHM_QUANTUM,
+                  item.tupletCount ? cleanBeat(item.durationBeats) : quantizeBeat(item.durationBeats)
+                )
                 : 1,
               startBeat: restoredOnsets.get(onsetId),
+              rawStartBeat: Number.isFinite(item.rawStartBeat) ? cleanBeat(item.rawStartBeat) : null,
+              rawDurationBeats: Number.isFinite(item.rawDurationBeats)
+                ? Math.max(0, cleanBeat(item.rawDurationBeats))
+                : null,
+              joinToOnsetId: typeof item.joinToOnsetId === "string" ? item.joinToOnsetId : null,
               createdAt
             };
           });
@@ -379,6 +485,7 @@
         }
       }
       bridgeAllShortGaps();
+      applyRecognizedRhythm();
     } catch (error) {
       showToast("The saved idea could not be read, so a fresh sheet was opened.", "error");
     }
@@ -485,7 +592,9 @@
       segmentCounts.set(measure, (segmentCounts.get(measure) || 0) + 1);
     });
     const densestMeasure = Math.max(1, ...segmentCounts.values());
-    const minimumMeasureWidth = Math.max(380, capacity * BEAT_SPACING, 112 + densestMeasure * 22);
+    // Give every rhythmic attack enough horizontal room for its head, stem,
+    // accidental, beam and tuplet number. Dense measures become their own row.
+    const minimumMeasureWidth = Math.max(420, capacity * BEAT_SPACING, 128 + densestMeasure * 30);
     const measuresPerSystem = Math.max(1, Math.min(4, Math.floor((contentWidth - 20) / minimumMeasureWidth)));
     const measureWidth = minimumMeasureWidth;
     const systemWidth = measuresPerSystem * measureWidth + 20;
@@ -990,13 +1099,28 @@
       ["treble", "bass"].forEach((staff) => {
         const notes = group.notes.filter((note) => noteStaff(note) === staff).sort((a, b) => a.midi - b.midi);
         if (!notes.length) return;
-        const durationBeats = Math.max(...notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
+        const tupletNote = notes.find((note) => note.tupletId);
+        const tuplet = tupletNote
+          ? {
+            id: tupletNote.tupletId,
+            index: tupletNote.tupletIndex,
+            count: tupletNote.tupletCount,
+            notesOccupied: tupletNote.tupletNotesOccupied,
+            baseSlug: tupletNote.tupletBaseSlug,
+            baseDuration: tupletNote.tupletBaseDuration,
+            unitBeats: tupletNote.tupletUnitBeats
+          }
+          : null;
+        const durationBeats = tuplet
+          ? tuplet.unitBeats
+          : Math.max(...notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
         eventsByStaff[staff].push({
           id: `${group.id}-${staff}`,
           startBeat: group.startBeat,
           durationBeats,
           endBeat: group.startBeat + durationBeats,
-          notes
+          notes,
+          tuplet
         });
       });
     });
@@ -1013,6 +1137,27 @@
           }
           lane.events.push(event);
           lane.endBeat = event.endBeat;
+          if (event.tuplet) {
+            const baseIsEighth = event.tuplet.baseSlug === "eighth";
+            lane.pieces.push({
+              id: `${event.id}-tuplet`,
+              sourceId: event.id,
+              startBeat: event.startBeat,
+              spec: {
+                beats: event.tuplet.unitBeats,
+                name: `${event.tuplet.count}-note ${event.tuplet.baseSlug}-note tuplet`,
+                slug: `${event.tuplet.baseSlug}-tuplet`,
+                vexBase: baseIsEighth ? "8" : "16",
+                dotted: false,
+                flags: baseIsEighth ? 1 : 2
+              },
+              notes: event.notes,
+              tuplet: event.tuplet,
+              tiedFromPrevious: false,
+              tiedToNext: false
+            });
+            return;
+          }
           splitDuration(event.startBeat, event.durationBeats).forEach((piece) => {
             lane.pieces.push({
               id: `${event.id}-${piece.index}`,
@@ -1107,7 +1252,7 @@
   }
 
   function vexDuration(spec, isRest) {
-    const base = {
+    const base = spec.vexBase || {
       measure: "w",
       whole: "w",
       "dotted-half": "h",
@@ -1116,7 +1261,9 @@
       quarter: "q",
       "dotted-eighth": "8",
       eighth: "8",
-      sixteenth: "16"
+      "dotted-sixteenth": "16",
+      sixteenth: "16",
+      "thirty-second": "32"
     }[spec.slug] || "16";
     return `${base}${spec.dotted ? "d" : ""}${isRest ? "r" : ""}`;
   }
@@ -1181,6 +1328,33 @@
     return { segment, staff, notes, isRest, hiddenRest, vexNote, idToIndex, laneIndex };
   }
 
+  function createEngravedTuplets(VF, entries) {
+    const grouped = new Map();
+    entries.forEach((entry) => {
+      if (!entry.segment.tuplet || entry.isRest) return;
+      const id = entry.segment.tuplet.id;
+      if (!grouped.has(id)) grouped.set(id, []);
+      grouped.get(id).push(entry);
+    });
+
+    const tuplets = [];
+    grouped.forEach((tupletEntries) => {
+      tupletEntries.sort((a, b) => a.segment.tuplet.index - b.segment.tuplet.index);
+      const tuplet = tupletEntries[0].segment.tuplet;
+      if (tupletEntries.length !== tuplet.count) return;
+      const notes = tupletEntries.map((entry) => entry.vexNote);
+      const averageDirection = notes.reduce((sum, note) => sum + note.getStemDirection(), 0);
+      tuplets.push(new VF.Tuplet(notes, {
+        num_notes: tuplet.count,
+        notes_occupied: tuplet.notesOccupied,
+        ratioed: false,
+        bracketed: false,
+        location: averageDirection < 0 ? VF.Tuplet.LOCATION_BOTTOM : VF.Tuplet.LOCATION_TOP
+      }));
+    });
+    return tuplets;
+  }
+
   function addEngravedTie(VF, context, firstEntry, lastEntry, noteId) {
     const firstIndex = firstEntry?.idToIndex.get(noteId) ?? 0;
     const lastIndex = lastEntry?.idToIndex.get(noteId) ?? 0;
@@ -1223,6 +1397,11 @@
     const groups = onsetGroups();
     const confirmedRestEnd = Math.min(totalBeats, state.timelineEndBeat || 0);
     const confirmedRests = globalRestSegments(groups, confirmedRestEnd);
+    const beamOptions = {
+      groups: VF.Beam.getDefaultBeamGroups(state.timeSignature),
+      beam_rests: false,
+      maintain_stem_directions: false
+    };
 
     for (let systemIndex = 0; systemIndex < layout.systemCount; systemIndex += 1) {
       const firstMeasure = systemIndex * layout.measuresPerSystem;
@@ -1294,10 +1473,14 @@
               createEngravedEntry(VF, segment, staff, accidentalState, laneIndex, lanes.length)
             ));
             const notes = entries.map((entry) => entry.vexNote);
+            // Tuplets adjust rhythmic ticks before the automatic beam pass;
+            // this keeps all notes in a tuplet under one correctly grouped beam.
+            const tuplets = createEngravedTuplets(VF, entries);
+            const beams = VF.Beam.generateBeams(notes, beamOptions);
             const voice = new VF.Voice({ num_beats: numerator, beat_value: denominator })
               .setStrict(false)
               .addTickables(notes);
-            voiceModels.push({ staff, stave, laneKey, entries, notes, voice });
+            voiceModels.push({ staff, stave, laneKey, entries, notes, voice, beams, tuplets });
           });
 
           const restEntries = measureRestTrackSegments(
@@ -1318,20 +1501,11 @@
               laneKey: `${staff}-confirmed-rests`,
               entries: restEntries,
               notes,
-              voice
+              voice,
+              beams: [],
+              tuplets: []
             });
           }
-        });
-
-        const beamOptions = {
-          groups: VF.Beam.getDefaultBeamGroups(state.timeSignature),
-          beam_rests: false,
-          maintain_stem_directions: false
-        };
-        // Attach beams before drawing the notes. Otherwise flagged notes are
-        // painted first and keep their individual flags underneath the beam.
-        voiceModels.forEach((model) => {
-          model.beams = VF.Beam.generateBeams(model.notes, beamOptions);
         });
 
         const formatter = new VF.Formatter();
@@ -1344,8 +1518,9 @@
         formatter.format(voiceModels.map(({ voice }) => voice), layout.measureWidth - (localMeasure === 0 ? 104 : 34));
         voiceModels.forEach(({ voice, stave }) => voice.draw(context, stave));
 
-        voiceModels.forEach(({ beams, entries, laneKey }) => {
+        voiceModels.forEach(({ beams, tuplets, entries, laneKey }) => {
           beams.forEach((beam) => beam.setContext(context).draw());
+          tuplets.forEach((tuplet) => tuplet.setContext(context).draw());
           if (!entriesByLane.has(laneKey)) entriesByLane.set(laneKey, []);
           entries.forEach((entry) => {
             entry.context = context;
@@ -1416,7 +1591,7 @@
     }
     const selected = state.notes.find((note) => note.id === state.selectedId);
     el.selectionBar.hidden = !selected;
-    if (selected) el.selectionLabel.textContent = `${displayNote(selected.spelling || selected.note)} · ${durationName(selected.durationBeats)} selected`;
+    if (selected) el.selectionLabel.textContent = `${displayNote(selected.spelling || selected.note)} · ${recordedDurationName(selected)} selected`;
     el.undo.disabled = state.undoStack.length === 0;
     el.redo.disabled = state.redoStack.length === 0;
     el.playScore.disabled = !hasNotes;
@@ -1557,7 +1732,7 @@
     if (key) key.classList.toggle("is-active", active);
   }
 
-  function bridgeShortGapTo(onsetBeat, silenceDurationMs = null) {
+  function bridgeShortGapTo(onsetBeat, silenceDurationMs = null, onsetId = null) {
     const previousGroup = onsetGroups()
       .filter((group) => group.startBeat < onsetBeat - 0.001)
       .sort((a, b) => a.startBeat - b.startBeat)
@@ -1575,6 +1750,7 @@
       const joinedDuration = quantizeBeat(onsetBeat - recordedNote.startBeat);
       recordedNote.durationBeats = Math.max(recordedNote.durationBeats || RHYTHM_QUANTUM, joinedDuration);
       recordedNote.duration = millisecondsFromQuarterUnits(recordedNote.durationBeats) / 1000;
+      if (onsetId) recordedNote.joinToOnsetId = onsetId;
     });
   }
 
@@ -1589,6 +1765,7 @@
       const silentGap = nextOnset - previousEnd;
       if (silentGap <= 0.001 || silentGap >= MIN_REST_BEATS - 0.001) continue;
       previousGroup.notes.forEach((recordedNote) => {
+        recordedNote.joinToOnsetId = groups[index].id;
         recordedNote.durationBeats = Math.max(
           recordedNote.durationBeats || RHYTHM_QUANTUM,
           quantizeBeat(nextOnset - recordedNote.startBeat)
@@ -1639,12 +1816,14 @@
       activeRecordIds.forEach((activeId) => {
         const heldNote = state.notes.find((recordedNote) => recordedNote.id === activeId);
         if (!heldNote || heldNote.onsetId === onset.id) return;
-        heldNote.durationBeats = Math.max(
-          heldNote.durationBeats || 1,
-          quantizeBeat(onset.startBeat - heldNote.startBeat + RHYTHM_QUANTUM)
+        const heldFrom = Number.isFinite(heldNote.rawStartBeat) ? heldNote.rawStartBeat : heldNote.startBeat;
+        const heldUntil = Number.isFinite(onset.rawStartBeat) ? onset.rawStartBeat : onset.startBeat;
+        heldNote.rawDurationBeats = Math.max(
+          heldNote.rawDurationBeats || RHYTHM_QUANTUM,
+          cleanBeat(heldUntil - heldFrom)
         );
       });
-      bridgeShortGapTo(onset.startBeat, silenceDurationMs);
+      bridgeShortGapTo(onset.startBeat, silenceDurationMs, onset.id);
     }
     const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     state.notes.push({
@@ -1656,9 +1835,14 @@
       duration: millisecondsFromQuarterUnits(RHYTHM_QUANTUM) / 1000,
       durationBeats: RHYTHM_QUANTUM,
       startBeat: onset.startBeat,
+      rawStartBeat: onset.rawStartBeat,
+      rawDurationBeats: RHYTHM_QUANTUM,
+      joinToOnsetId: null,
       createdAt: Date.now()
     });
-    state.timelineEndBeat = Math.max(state.timelineEndBeat || 0, onset.startBeat);
+    applyRecognizedRhythm();
+    const recorded = state.notes.find((recordedNote) => recordedNote.id === id);
+    state.timelineEndBeat = Math.max(state.timelineEndBeat || 0, recorded?.startBeat || onset.startBeat);
     activeRecordIds.set(note, id);
     recordStartTimes.set(id, inputStartedAt);
     state.selectedId = null;
@@ -1674,14 +1858,12 @@
     if (record && Number.isFinite(started)) {
       const durationMs = Math.max(1, inputEndedAt - started);
       record.duration = durationMs / 1000;
-      record.durationBeats = Math.max(
-        record.durationBeats || RHYTHM_QUANTUM,
-        RHYTHM_QUANTUM,
-        quantizeBeat(quarterUnitsFromMs(durationMs))
-      );
+      record.rawDurationBeats = Math.max(RHYTHM_QUANTUM, cleanBeat(quarterUnitsFromMs(durationMs)));
+      record.durationBeats = Math.max(RHYTHM_QUANTUM, quantizeBeat(record.rawDurationBeats));
     }
     activeRecordIds.delete(note);
     recordStartTimes.delete(id);
+    applyRecognizedRhythm();
     saveAll();
     // The final duration can cross a bar or system boundary, so keep the
     // newly created measure/row in view after the key is released as well.
