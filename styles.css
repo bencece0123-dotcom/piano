@@ -67,11 +67,20 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .text-button { padding: 8px 6px; color: var(--green); background: transparent; }
 .score-viewport { position: relative; height: clamp(320px, 52vh, 560px); min-height: 0; padding: 30px 34px; overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-gutter: stable; contain: layout paint; border-top: 1px solid var(--line); background: #fffefb; }
 .empty-score { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; color: var(--ink-soft); text-align: center; }
+.empty-score[hidden] { display: none; }
 .empty-note { color: var(--green); font-family: Georgia, serif; font-size: 46px; line-height: 1; }
 .empty-score p { margin: 8px 0 0; }
 .staff { display: none; min-width: 0; }
-.staff.has-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 30px; }
+.staff.has-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; }
 .score-system { position: relative; isolation: isolate; flex: 0 0 auto; height: 230px; max-width: none; }
+.engraved-system { height: 270px; }
+.score-engraving { position: absolute; inset: 0; pointer-events: none; }
+.score-engraving svg { display: block; overflow: visible; color: #111412; shape-rendering: geometricPrecision; text-rendering: geometricPrecision; }
+.score-hit-target { position: absolute; z-index: 10; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; }
+.score-hit-target:hover { border-color: rgba(23, 74, 58, .38); background: rgba(215, 229, 217, .42); }
+.score-hit-target:focus-visible { outline: 3px solid #e6a93f; outline-offset: 1px; }
+.score-hit-target.is-selected { border: 2px solid var(--green); background: rgba(215, 229, 217, .45); }
+.score-render-error { align-self: stretch; margin: 30px 0; padding: 18px; color: #7c261f; background: var(--red-soft); border-radius: 12px; line-height: 1.5; }
 .staff-line { position: absolute; left: 58px; right: 18px; z-index: 0; height: 1px; background: var(--ink); }
 .clef { position: absolute; left: 18px; z-index: 1; width: 42px; text-align: center; color: var(--ink); font-family: "Bravura Text", "Noto Music", "Apple Symbols", "Times New Roman", serif; line-height: 1; -webkit-font-smoothing: antialiased; }
 .treble-clef { top: 32px; font-size: 67px; }

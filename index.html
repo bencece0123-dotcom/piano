@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Catch the melody before it disappears." />
     <meta name="twitter:image" content="/assets/og.png" />
     <title>Melody Catcher — Online Piano</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260902-2" />
   </head>
   <body>
     <a class="skip-link" href="#piano">Skip to piano</a>
@@ -236,7 +236,7 @@
           <p><strong>1. Play.</strong> Tap the piano or press the letter shown on a key. Higher pitches rise through the five-line treble staff; lower pitches use the five-line bass staff.</p>
           <p><strong>2. Read rhythm.</strong> Filled, open, flagged, and dotted heads show sixteenth, eighth, quarter, half, dotted, and whole values. Beams group fast notes by the meter, each new score row repeats its clefs and time signature, and silence is written with solid black rests of the correct length.</p>
           <p><strong>3. Read pitch.</strong> The score uses C major, so it has no key-signature symbols. Sharps or flats mark black keys, remain active for that pitch through the measure, and a natural cancels them. Ledger lines show notes beyond a staff.</p>
-          <p><strong>4. Hold and chord.</strong> Notes pressed within 10 ms share a chord stem on the same staff. A note held across later attacks lengthens independently; legal values and curved ties carry it across beats or barlines.</p>
+          <p><strong>4. Hold and chord.</strong> Notes pressed within 10 ms share a chord stem on the same staff. A held note keeps its own full value while later attacks use a separate voice; a curved tie appears only when the duration crosses a barline or needs more than one legal note value.</p>
           <p><strong>5. Keep.</strong> Tempo uses the selected time signature’s beat unit. Your idea saves on this device, and Export creates a readable note-and-rhythm list.</p>
           <p class="help-tip"><kbd>Space</kbd> pauses or resumes recording without muting the piano.</p>
         </div>
@@ -244,6 +244,7 @@
     </dialog>
 
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
-    <script src="script.js" defer></script>
+    <script src="assets/vexflow.js" defer></script>
+    <script src="script.js?v=20260902-2" defer></script>
   </body>
 </html>

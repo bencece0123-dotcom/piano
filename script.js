@@ -9,6 +9,8 @@
   const NOTE_EDGE_PADDING = 24;
   const STEM_LENGTH = 42;
   const RHYTHM_QUANTUM = 0.25;
+  const MIN_REST_BEATS = 1.25;
+  const REST_CONFIRM_DELAY_MS = 350;
   const TIME_SIGNATURES = ["4/4", "2/2", "6/8", "3/4", "2/4", "12/8", "9/8", "5/4", "7/4", "3/8", "5/8", "7/8", "8/8"];
   const NOTE_VALUES = [
     { beats: 4, name: "whole note", slug: "whole", open: true, stem: false, flags: 0, dotted: false },
@@ -16,6 +18,7 @@
     { beats: 2, name: "half note", slug: "half", open: true, stem: true, flags: 0, dotted: false },
     { beats: 1.5, name: "dotted quarter note", slug: "dotted-quarter", open: false, stem: true, flags: 0, dotted: true },
     { beats: 1, name: "quarter note", slug: "quarter", open: false, stem: true, flags: 0, dotted: false },
+    { beats: 0.75, name: "dotted eighth note", slug: "dotted-eighth", open: false, stem: true, flags: 1, dotted: true },
     { beats: 0.5, name: "eighth note", slug: "eighth", open: false, stem: true, flags: 1, dotted: false },
     { beats: 0.25, name: "sixteenth note", slug: "sixteenth", open: false, stem: true, flags: 2, dotted: false }
   ];
@@ -56,6 +59,7 @@
     timeSignature: "4/4",
     profileName: "",
     ideaTitle: "Untitled idea",
+    timelineEndBeat: 0,
     bindings: { ...defaultBindingMap }
   };
 
@@ -117,10 +121,15 @@
   const activeKeyboard = new Map();
   const activeRecordIds = new Map();
   const recordStartTimes = new Map();
+  const staffByRecordedNote = new Map();
+  let keyboardAudioBatch = null;
+  let silentMeasureTimer = null;
+  let silenceStartedAt = null;
   let currentOnsetWindow = null;
   let recordingClock = null;
   let lastOnsetBeat = null;
   let scoreRenderFrame = null;
+  let scoreShouldFollow = false;
 
   function displayNote(note) {
     return note.replace("#", "♯").replace("b", "♭");
@@ -215,11 +224,24 @@
   }
 
   function nextCompositionBeat() {
-    if (!state.notes.length) return 0;
-    return quantizeBeat(Math.max(...state.notes.map((note) => note.startBeat + (note.durationBeats || 1))));
+    const noteEnd = state.notes.length
+      ? Math.max(...state.notes.map((note) => note.startBeat + (note.durationBeats || 1)))
+      : 0;
+    return quantizeBeat(Math.max(noteEnd, state.timelineEndBeat || 0));
+  }
+
+  function latestOnsetBeat() {
+    return state.notes.length ? Math.max(...state.notes.map((note) => note.startBeat)) : 0;
+  }
+
+  function cancelSilentMeasureTimer() {
+    if (silentMeasureTimer !== null) window.clearTimeout(silentMeasureTimer);
+    silentMeasureTimer = null;
   }
 
   function resetRecordingClock() {
+    cancelSilentMeasureTimer();
+    silenceStartedAt = null;
     currentOnsetWindow = null;
     recordingClock = null;
     lastOnsetBeat = null;
@@ -337,6 +359,9 @@
             };
           });
       }
+      // Trailing silence is live session state. Gaps before later notes are
+      // already preserved by their onset positions and do not need this value.
+      state.timelineEndBeat = latestOnsetBeat();
       if (["piano", "electric", "organ"].includes(parsed.instrument)) state.instrument = parsed.instrument;
       if (Number.isFinite(parsed.volume)) state.volume = Math.max(0, Math.min(100, parsed.volume));
       if (Number.isFinite(parsed.tempo)) state.tempo = Math.max(40, Math.min(200, Math.round(parsed.tempo)));
@@ -353,6 +378,7 @@
           state.bindings = candidate;
         }
       }
+      bridgeAllShortGaps();
     } catch (error) {
       showToast("The saved idea could not be read, so a fresh sheet was opened.", "error");
     }
@@ -429,7 +455,23 @@
   }
 
   function noteStaff(recordedNote) {
-    return recordedNote.midi < 60 ? "bass" : "treble";
+    return staffByRecordedNote.get(recordedNote.id) || (recordedNote.midi < 60 ? "bass" : "treble");
+  }
+
+  function updateChordStaffAssignments(groups) {
+    staffByRecordedNote.clear();
+    groups.forEach((group) => {
+      const midis = group.notes.map((note) => note.midi);
+      const lowest = Math.min(...midis);
+      const highest = Math.max(...midis);
+      const isCompactChord = group.notes.length > 1 && highest - lowest <= 12;
+      const sharedStaff = isCompactChord
+        ? (midis.reduce((sum, midi) => sum + midi, 0) / midis.length < 60 ? "bass" : "treble")
+        : null;
+      group.notes.forEach((note) => {
+        staffByRecordedNote.set(note.id, sharedStaff || (note.midi < 60 ? "bass" : "treble"));
+      });
+    });
   }
 
   function scoreLayout(totalMeasures) {
@@ -437,16 +479,26 @@
     const viewportWidth = el.scoreViewport.clientWidth || 960;
     const horizontalPadding = viewportWidth <= 780 ? 40 : 68;
     const contentWidth = Math.max(280, viewportWidth - horizontalPadding);
-    const availableMusicWidth = Math.max(160, contentWidth - SCORE_START_X - SCORE_END_PADDING);
-    const naturalMeasureWidth = capacity * BEAT_SPACING;
-    const measuresPerSystem = Math.max(1, Math.min(4, Math.floor(availableMusicWidth / naturalMeasureWidth)));
-    const beatSpacing = BEAT_SPACING;
+    const segmentCounts = new Map();
+    buildEngravedSegments(totalMeasures * capacity).forEach((segment) => {
+      const measure = Math.floor(segment.startBeat / capacity);
+      segmentCounts.set(measure, (segmentCounts.get(measure) || 0) + 1);
+    });
+    const densestMeasure = Math.max(1, ...segmentCounts.values());
+    const minimumMeasureWidth = Math.max(380, capacity * BEAT_SPACING, 112 + densestMeasure * 22);
+    const measuresPerSystem = Math.max(1, Math.min(4, Math.floor((contentWidth - 20) / minimumMeasureWidth)));
+    const measureWidth = minimumMeasureWidth;
+    const systemWidth = measuresPerSystem * measureWidth + 20;
+    const beatSpacing = measureWidth / capacity;
     const beatsPerSystem = capacity * measuresPerSystem;
     return {
       capacity,
       measuresPerSystem,
       beatsPerSystem,
       beatSpacing,
+      measureWidth,
+      systemWidth,
+      systemHeight: 270,
       systemCount: Math.ceil(totalMeasures / measuresPerSystem)
     };
   }
@@ -763,7 +815,7 @@
       const left = localRestX(segment.startBeat, segment.spec.beats, systemIndex, layout);
       rest.style.left = `${left}px`;
       rest.setAttribute("role", "img");
-      rest.setAttribute("aria-label", `${segment.spec.name} rest, measure ${Math.floor(segment.startBeat / capacity) + 1}`);
+      rest.setAttribute("aria-label", `${segment.spec.name} rest, measure ${Math.floor(segment.startBeat / layout.capacity) + 1}`);
       const mark = document.createElement("span");
       mark.className = "rest-mark";
       mark.setAttribute("aria-hidden", "true");
@@ -932,134 +984,435 @@
     });
   }
 
-  function renderScore() {
+  function buildEngravedLanes() {
+    const eventsByStaff = { treble: [], bass: [] };
+    onsetGroups().forEach((group) => {
+      ["treble", "bass"].forEach((staff) => {
+        const notes = group.notes.filter((note) => noteStaff(note) === staff).sort((a, b) => a.midi - b.midi);
+        if (!notes.length) return;
+        const durationBeats = Math.max(...notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
+        eventsByStaff[staff].push({
+          id: `${group.id}-${staff}`,
+          startBeat: group.startBeat,
+          durationBeats,
+          endBeat: group.startBeat + durationBeats,
+          notes
+        });
+      });
+    });
+
+    const lanesByStaff = { treble: [], bass: [] };
+    ["treble", "bass"].forEach((staff) => {
+      eventsByStaff[staff]
+        .sort((a, b) => a.startBeat - b.startBeat || b.durationBeats - a.durationBeats)
+        .forEach((event) => {
+          let lane = lanesByStaff[staff].find((candidate) => candidate.endBeat <= event.startBeat + 0.001);
+          if (!lane) {
+            lane = { endBeat: 0, events: [], pieces: [] };
+            lanesByStaff[staff].push(lane);
+          }
+          lane.events.push(event);
+          lane.endBeat = event.endBeat;
+          splitDuration(event.startBeat, event.durationBeats).forEach((piece) => {
+            lane.pieces.push({
+              id: `${event.id}-${piece.index}`,
+              sourceId: event.id,
+              startBeat: piece.startBeat,
+              spec: piece.spec,
+              notes: event.notes,
+              tiedFromPrevious: piece.tiedFromPrevious,
+              tiedToNext: piece.tiedToNext
+            });
+          });
+        });
+      if (!lanesByStaff[staff].length) lanesByStaff[staff].push({ endBeat: 0, events: [], pieces: [] });
+    });
+    return lanesByStaff;
+  }
+
+  function buildEngravedSegments() {
+    const lanes = buildEngravedLanes();
+    return [...lanes.treble, ...lanes.bass].flatMap((lane) => lane.pieces);
+  }
+
+  function measureLaneSegments(lane, measureStart, measureEnd) {
+    const result = [];
+    let cursor = measureStart;
+    lane.pieces
+      .filter((piece) => piece.startBeat >= measureStart - 0.001 && piece.startBeat < measureEnd - 0.001)
+      .sort((a, b) => a.startBeat - b.startBeat)
+      .forEach((piece) => {
+        if (piece.startBeat > cursor + 0.001) {
+          splitDuration(cursor, piece.startBeat - cursor).forEach((restPiece) => {
+            result.push({
+              id: `rest-${cursor}-${restPiece.index}`,
+              startBeat: restPiece.startBeat,
+              spec: restPiece.spec,
+              notes: [],
+              isRest: true
+            });
+          });
+        }
+        result.push(piece);
+        cursor = Math.max(cursor, piece.startBeat + piece.spec.beats);
+      });
+    if (cursor < measureEnd - 0.001) {
+      splitDuration(cursor, measureEnd - cursor).forEach((restPiece) => {
+        result.push({
+          id: `rest-${cursor}-${restPiece.index}`,
+          startBeat: restPiece.startBeat,
+          spec: restPiece.spec,
+          notes: [],
+          isRest: true
+        });
+      });
+    }
+    return result;
+  }
+
+  function measureRestTrackSegments(restSegments, measureStart, measureEnd, staff, groups) {
+    const result = [];
+    let cursor = measureStart;
+    const addHiddenTime = (startBeat, durationBeats) => {
+      if (durationBeats <= 0.001) return;
+      splitDuration(startBeat, durationBeats).forEach((piece) => {
+        result.push({
+          id: `rest-time-${staff}-${piece.startBeat}-${piece.index}`,
+          startBeat: piece.startBeat,
+          spec: piece.spec,
+          notes: [],
+          isRest: true,
+          hiddenRest: true
+        });
+      });
+    };
+
+    restSegments
+      .filter((segment) => segment.startBeat >= measureStart - 0.001 && segment.startBeat < measureEnd - 0.001)
+      .sort((a, b) => a.startBeat - b.startBeat)
+      .forEach((segment) => {
+        if (segment.startBeat > cursor + 0.001) addHiddenTime(cursor, segment.startBeat - cursor);
+        result.push({
+          ...segment,
+          id: `confirmed-rest-${staff}-${segment.startBeat}`,
+          notes: [],
+          isRest: true,
+          hiddenRest: restStaffAt(segment.startBeat, groups) !== staff
+        });
+        cursor = Math.max(cursor, segment.startBeat + segment.spec.beats);
+      });
+
+    if (cursor < measureEnd - 0.001) addHiddenTime(cursor, measureEnd - cursor);
+    return result;
+  }
+
+  function vexDuration(spec, isRest) {
+    const base = {
+      measure: "w",
+      whole: "w",
+      "dotted-half": "h",
+      half: "h",
+      "dotted-quarter": "q",
+      quarter: "q",
+      "dotted-eighth": "8",
+      eighth: "8",
+      sixteenth: "16"
+    }[spec.slug] || "16";
+    return `${base}${spec.dotted ? "d" : ""}${isRest ? "r" : ""}`;
+  }
+
+  function vexKey(recordedNote) {
+    const match = (recordedNote.spelling || recordedNote.note).match(/^([A-G])([#b]?)(\d)$/);
+    return `${match[1].toLowerCase()}${match[2]}/${match[3]}`;
+  }
+
+  function createEngravedEntry(VF, segment, staff, accidentalState, laneIndex = 0, laneCount = 1) {
+    const notes = segment.notes.filter((note) => noteStaff(note) === staff).sort((a, b) => a.midi - b.midi);
+    const isRest = notes.length === 0;
+    const hiddenRest = isRest && segment.hiddenRest;
+    const fullMeasureRest = isRest && segment.spec.fullMeasure;
+    const hangsFromFourthLine = fullMeasureRest || (isRest && segment.spec.slug === "whole");
+    const restKey = staff === "treble"
+      ? hangsFromFourthLine ? "d/5" : "b/4"
+      : hangsFromFourthLine ? "f/3" : "d/3";
+    const keys = isRest ? [restKey] : notes.map(vexKey);
+    const vexNote = hiddenRest
+      ? new VF.GhostNote({ duration: vexDuration(segment.spec, false) })
+      : new VF.StaveNote({
+        clef: staff,
+        keys,
+        duration: vexDuration(segment.spec, isRest),
+        auto_stem: true
+      });
+    if (fullMeasureRest) {
+      vexNote.setDuration(new VF.Fraction(measureCapacity(), 4));
+      if (!hiddenRest) vexNote.setCenterAlignment(true);
+    }
+    if (segment.spec.dotted && !hiddenRest) VF.Dot.buildAndAttach([vexNote], { all: true });
+    if (!isRest) {
+      const middleLineStep = staff === "treble" ? 13 : 1;
+      const furthestNote = notes.reduce((furthest, recordedNote) => {
+        const step = diatonicStep(recordedNote.spelling || recordedNote.note);
+        const distance = Math.abs(step - middleLineStep);
+        if (!furthest || distance > furthest.distance || (distance === furthest.distance && step >= middleLineStep)) {
+          return { step, distance };
+        }
+        return furthest;
+      }, null);
+      vexNote.setStemDirection(furthestNote.step >= middleLineStep ? VF.Stem.DOWN : VF.Stem.UP);
+    }
+
+    const idToIndex = new Map();
+    notes.forEach((recordedNote, noteIndex) => {
+      idToIndex.set(recordedNote.id, noteIndex);
+      const spelling = recordedNote.spelling || recordedNote.note;
+      const match = spelling.match(/^([A-G])([#b]?)(\d)$/);
+      const pitchKey = `${match[1]}${match[3]}`;
+      const alteration = match[2] || "natural";
+      const previous = accidentalState.get(pitchKey) || "natural";
+      const isAttack = Math.abs(recordedNote.startBeat - segment.startBeat) < 0.001;
+      if (isAttack && alteration !== previous) {
+        const symbol = alteration === "natural" ? "n" : alteration;
+        vexNote.addModifier(new VF.Accidental(symbol), noteIndex);
+      }
+      accidentalState.set(pitchKey, alteration);
+    });
+
+    return { segment, staff, notes, isRest, hiddenRest, vexNote, idToIndex, laneIndex };
+  }
+
+  function addEngravedTie(VF, context, firstEntry, lastEntry, noteId) {
+    const firstIndex = firstEntry?.idToIndex.get(noteId) ?? 0;
+    const lastIndex = lastEntry?.idToIndex.get(noteId) ?? 0;
+    const tie = new VF.StaveTie({
+      first_note: firstEntry?.vexNote,
+      last_note: lastEntry?.vexNote,
+      first_indices: [firstIndex],
+      last_indices: [lastIndex]
+    });
+    tie.setContext(context).draw();
+  }
+
+  function addScoreHitTargets(system, entries) {
+    entries.forEach((entry) => {
+      if (entry.isRest) return;
+      const noteX = entry.vexNote.getAbsoluteX();
+      const noteYs = entry.vexNote.getYs();
+      entry.notes.forEach((recordedNote, noteIndex) => {
+        if (Math.abs(recordedNote.startBeat - entry.segment.startBeat) > 0.001) return;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `score-hit-target${state.selectedId === recordedNote.id ? " is-selected" : ""}`;
+        button.dataset.id = recordedNote.id;
+        button.style.left = `${noteX - 12}px`;
+        button.style.top = `${noteYs[noteIndex] - 12}px`;
+        button.setAttribute("aria-label", `${spokenNote(recordedNote.spelling || recordedNote.note)}, ${entry.segment.spec.name}. Select to edit.`);
+        button.setAttribute("aria-pressed", state.selectedId === recordedNote.id ? "true" : "false");
+        system.append(button);
+      });
+    });
+  }
+
+  function renderEngravedSystems(totalMeasures, totalBeats, layout) {
+    const VF = window.Vex?.Flow || window.Vex;
+    if (!VF?.Renderer) throw new Error("The music engraving library did not load.");
+    const lanesByStaff = buildEngravedLanes();
+    const entriesByLane = new Map();
+    const systemModels = [];
+    const { numerator, denominator } = timeSignatureParts();
+    const groups = onsetGroups();
+    const confirmedRestEnd = Math.min(totalBeats, state.timelineEndBeat || 0);
+    const confirmedRests = globalRestSegments(groups, confirmedRestEnd);
+
+    for (let systemIndex = 0; systemIndex < layout.systemCount; systemIndex += 1) {
+      const firstMeasure = systemIndex * layout.measuresPerSystem;
+      const measuresInSystem = Math.min(layout.measuresPerSystem, totalMeasures - firstMeasure);
+      const systemWidth = measuresInSystem * layout.measureWidth + 20;
+      const system = document.createElement("div");
+      system.className = "score-system engraved-system";
+      system.style.width = `${systemWidth}px`;
+      system.style.height = `${layout.systemHeight}px`;
+      system.setAttribute("aria-label", measuresInSystem === 1
+        ? `Measure ${firstMeasure + 1}`
+        : `Measures ${firstMeasure + 1} through ${firstMeasure + measuresInSystem}`);
+      const engraving = document.createElement("div");
+      engraving.className = "score-engraving";
+      engraving.setAttribute("aria-hidden", "true");
+      system.append(engraving);
+      el.staff.append(system);
+
+      const renderer = new VF.Renderer(engraving, VF.Renderer.Backends.SVG);
+      renderer.resize(systemWidth, layout.systemHeight);
+      const context = renderer.getContext();
+      const systemEntries = [];
+
+      for (let localMeasure = 0; localMeasure < measuresInSystem; localMeasure += 1) {
+        const measureIndex = firstMeasure + localMeasure;
+        const measureStart = measureIndex * layout.capacity;
+        const measureEnd = measureStart + layout.capacity;
+        const x = 10 + localMeasure * layout.measureWidth;
+        const trebleStave = new VF.Stave(x, 34, layout.measureWidth);
+        const bassStave = new VF.Stave(x, 144, layout.measureWidth);
+        if (localMeasure === 0) {
+          trebleStave.addClef("treble").addTimeSignature(state.timeSignature);
+          bassStave.addClef("bass").addTimeSignature(state.timeSignature);
+        }
+        if (systemIndex === 0 && localMeasure === 0) {
+          const duration = denominator === 8 ? "8" : denominator === 2 ? "h" : "q";
+          trebleStave.setTempo({ name: tempoWord(), duration, bpm: state.tempo }, -8);
+        }
+        trebleStave.setContext(context).draw();
+        bassStave.setContext(context).draw();
+
+        if (localMeasure === 0) {
+          new VF.StaveConnector(trebleStave, bassStave)
+            .setType(VF.StaveConnector.type.BRACE)
+            .setContext(context)
+            .draw();
+          new VF.StaveConnector(trebleStave, bassStave)
+            .setType(VF.StaveConnector.type.SINGLE_LEFT)
+            .setContext(context)
+            .draw();
+        }
+
+        const voiceModels = [];
+        [
+          { staff: "treble", stave: trebleStave },
+          { staff: "bass", stave: bassStave }
+        ].forEach(({ staff, stave }) => {
+          const lanes = lanesByStaff[staff];
+          lanes.forEach((lane, laneIndex) => {
+            const laneKey = `${staff}-${laneIndex}`;
+            const accidentalState = new Map();
+            const laneSegments = measureLaneSegments(lane, measureStart, measureEnd);
+            laneSegments.forEach((segment) => {
+              // Note voices need complete timing for VexFlow, but only the
+              // separate confirmed-silence track is allowed to print rests.
+              if (segment.isRest) segment.hiddenRest = true;
+            });
+            const entries = laneSegments.map((segment) => (
+              createEngravedEntry(VF, segment, staff, accidentalState, laneIndex, lanes.length)
+            ));
+            const notes = entries.map((entry) => entry.vexNote);
+            const voice = new VF.Voice({ num_beats: numerator, beat_value: denominator })
+              .setStrict(false)
+              .addTickables(notes);
+            voiceModels.push({ staff, stave, laneKey, entries, notes, voice });
+          });
+
+          const restEntries = measureRestTrackSegments(
+            confirmedRests,
+            measureStart,
+            measureEnd,
+            staff,
+            groups
+          ).map((segment) => createEngravedEntry(VF, segment, staff, new Map()));
+          if (restEntries.some((entry) => !entry.hiddenRest)) {
+            const notes = restEntries.map((entry) => entry.vexNote);
+            const voice = new VF.Voice({ num_beats: numerator, beat_value: denominator })
+              .setStrict(false)
+              .addTickables(notes);
+            voiceModels.push({
+              staff,
+              stave,
+              laneKey: `${staff}-confirmed-rests`,
+              entries: restEntries,
+              notes,
+              voice
+            });
+          }
+        });
+
+        const beamOptions = {
+          groups: VF.Beam.getDefaultBeamGroups(state.timeSignature),
+          beam_rests: false,
+          maintain_stem_directions: false
+        };
+        // Attach beams before drawing the notes. Otherwise flagged notes are
+        // painted first and keep their individual flags underneath the beam.
+        voiceModels.forEach((model) => {
+          model.beams = VF.Beam.generateBeams(model.notes, beamOptions);
+        });
+
+        const formatter = new VF.Formatter();
+        ["treble", "bass"].forEach((staff) => {
+          const staffVoices = voiceModels
+            .filter((model) => model.staff === staff)
+            .map((model) => model.voice);
+          if (staffVoices.length) formatter.joinVoices(staffVoices);
+        });
+        formatter.format(voiceModels.map(({ voice }) => voice), layout.measureWidth - (localMeasure === 0 ? 104 : 34));
+        voiceModels.forEach(({ voice, stave }) => voice.draw(context, stave));
+
+        voiceModels.forEach(({ beams, entries, laneKey }) => {
+          beams.forEach((beam) => beam.setContext(context).draw());
+          if (!entriesByLane.has(laneKey)) entriesByLane.set(laneKey, []);
+          entries.forEach((entry) => {
+            entry.context = context;
+            entry.systemIndex = systemIndex;
+            entry.laneKey = laneKey;
+            entriesByLane.get(laneKey).push(entry);
+            systemEntries.push(entry);
+          });
+        });
+      }
+      systemModels.push({ system, context, entries: systemEntries });
+    }
+
+    entriesByLane.forEach((laneEntries) => {
+      const entries = laneEntries.sort((a, b) => a.segment.startBeat - b.segment.startBeat);
+      for (let index = 1; index < entries.length; index += 1) {
+        const previous = entries[index - 1];
+        const current = entries[index];
+        if (!current.segment.tiedFromPrevious || previous.segment.sourceId !== current.segment.sourceId) continue;
+        if (Math.abs(previous.segment.startBeat + previous.segment.spec.beats - current.segment.startBeat) > 0.001) continue;
+        const sharedIds = previous.notes.filter((note) => current.idToIndex.has(note.id)).map((note) => note.id);
+        sharedIds.forEach((noteId) => {
+          if (previous.systemIndex === current.systemIndex) {
+            addEngravedTie(VF, current.context, previous, current, noteId);
+          } else {
+            addEngravedTie(VF, previous.context, previous, null, noteId);
+            addEngravedTie(VF, current.context, null, current, noteId);
+          }
+        });
+      }
+    });
+    systemModels.forEach(({ system, entries }) => addScoreHitTargets(system, entries));
+  }
+
+  function renderScore(shouldFollow = false) {
     const previousViewportScroll = {
       top: el.scoreViewport.scrollTop,
       left: el.scoreViewport.scrollLeft
     };
+    const previousStaffHeight = el.staff.offsetHeight;
     const hasNotes = state.notes.length > 0;
     el.emptyScore.hidden = hasNotes;
     el.staff.classList.toggle("has-notes", hasNotes);
+    // Keep the scroll range from collapsing while the synchronous engraving is
+    // replaced. Without this guard, scrollTop is forced to zero for a moment.
+    if (previousStaffHeight > 0) el.staff.style.minHeight = `${previousStaffHeight}px`;
     el.staff.replaceChildren();
     const groups = onsetGroups();
+    updateChordStaffAssignments(groups);
     const capacity = measureCapacity();
-    const beatUnit = beatUnitQuarterLength();
-    const scoreEnd = hasNotes ? Math.max(...groups.map((group) => group.startBeat + group.durationBeats)) : 0;
+    const noteEnd = hasNotes ? Math.max(...groups.map((group) => group.startBeat + group.durationBeats)) : 0;
+    const scoreEnd = Math.max(noteEnd, state.timelineEndBeat || 0);
     const totalBeats = hasNotes ? Math.max(capacity, Math.ceil(scoreEnd / capacity) * capacity) : capacity;
     const totalMeasures = Math.max(1, Math.round(totalBeats / capacity));
     const layout = scoreLayout(totalMeasures);
-    const events = buildNotationEvents(groups);
-    events.forEach((event) => {
-      event.systemIndex = systemIndexForBeat(event.startBeat, layout);
-    });
-    const eventByNoteSegment = new Map();
-    events.forEach((event) => event.notes.forEach((note) => {
-      eventByNoteSegment.set(`${note.id}:${event.segmentIndex}`, event);
-    }));
-    const accidentals = accidentalLayout(groups);
     el.staff.style.width = "";
     if (hasNotes) {
-      const systems = [];
-      const systemsFragment = document.createDocumentFragment();
-      for (let systemIndex = 0; systemIndex < layout.systemCount; systemIndex += 1) {
-        const firstMeasure = systemIndex * layout.measuresPerSystem;
-        const measuresInSystem = Math.min(layout.measuresPerSystem, totalMeasures - firstMeasure);
-        const musicEndX = SCORE_START_X + measuresInSystem * capacity * layout.beatSpacing;
-        const system = document.createElement("div");
-        system.className = "score-system";
-        system.style.width = `${musicEndX + SCORE_END_PADDING}px`;
-        system.setAttribute(
-          "aria-label",
-          measuresInSystem === 1
-            ? `Measure ${firstMeasure + 1}`
-            : `Measures ${firstMeasure + 1} through ${firstMeasure + measuresInSystem}`
-        );
-        addStaffFurniture(system, systemIndex, measuresInSystem, layout);
-        systems.push({ element: system, musicEndX, measuresInSystem });
-        systemsFragment.append(system);
+      try {
+        renderEngravedSystems(totalMeasures, totalBeats, layout);
+      } catch (error) {
+        console.error(error);
+        const message = document.createElement("p");
+        message.className = "score-render-error";
+        message.textContent = "The music sheet could not be drawn. Your recording is still saved; reload the page to try again.";
+        el.staff.append(message);
+        setAppStatus("Music sheet needs a reload", "error");
       }
-
-      addRests(systems, groups, totalBeats, layout);
-      const beamGroups = buildBeamGroups(events, layout);
-      events.forEach((event) => {
-        const system = systems[event.systemIndex].element;
-        event.notes.forEach((recordedNote) => {
-          const isStemNote = event.stemNoteId === recordedNote.id;
-          const y = noteY(recordedNote);
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = [
-            "score-note",
-            `value-${event.spec.slug}`,
-            event.spec.open ? "open-head" : "",
-            !event.spec.stem ? "stemless" : "",
-            isStemNote && event.stemDown ? "stem-down" : "",
-            event.tiedFromPrevious ? "tie-continuation" : "",
-            state.selectedId === recordedNote.id ? "is-selected" : ""
-          ].filter(Boolean).join(" ");
-          button.dataset.id = recordedNote.id;
-          if (event.tiedFromPrevious) button.tabIndex = -1;
-          button.style.left = `${localBeatX(event.startBeat, event.systemIndex, layout) + event.xOffset}px`;
-          button.style.top = `${y}px`;
-          button.style.setProperty("--head-shift", `${event.headShiftById.get(recordedNote.id)}px`);
-          if (isStemNote) {
-            button.style.setProperty("--chord-span", `${event.stemSpan}px`);
-            button.style.setProperty("--beam-extension", `${event.beamExtension || 0}px`);
-          }
-          const beatInMeasure = Number(((event.startBeat % capacity) / beatUnit + 1).toFixed(2));
-          button.setAttribute(
-            "aria-label",
-            `${spokenNote(recordedNote.spelling || recordedNote.note)}, ${event.spec.name}, beat ${beatInMeasure}, measure ${Math.floor(event.startBeat / capacity) + 1}${event.notes.length > 1 ? ", in a chord" : ""}${event.tiedFromPrevious ? ", tied continuation" : ""}. Select to edit.`
-          );
-          button.setAttribute("aria-pressed", state.selectedId === recordedNote.id ? "true" : "false");
-          if (event.segmentIndex === 0) {
-            const accidentalInfo = accidentals.get(recordedNote.id);
-            if (accidentalInfo) {
-              const accidental = document.createElement("span");
-              accidental.className = "note-accidental";
-              accidental.textContent = accidentalInfo.symbol;
-              accidental.style.setProperty("--accidental-offset", `${accidentalInfo.column * 12}px`);
-              button.append(accidental);
-            }
-          }
-          const head = document.createElement("span");
-          head.className = "note-head";
-          button.append(head);
-          if (event.spec.dotted) {
-            const dot = document.createElement("span");
-            dot.className = "note-dot";
-            button.append(dot);
-          }
-          if (isStemNote && event.spec.stem) {
-            const stem = document.createElement("span");
-            stem.className = "note-stem";
-            button.append(stem);
-            if (!event.beamed) {
-              for (let flagIndex = 0; flagIndex < event.spec.flags; flagIndex += 1) {
-                const flag = document.createElement("span");
-                flag.className = `note-flag flag-${flagIndex + 1}`;
-                button.append(flag);
-              }
-            }
-          }
-          ledgerLinePositions(recordedNote).forEach((lineY) => {
-            const ledger = document.createElement("span");
-            ledger.className = "ledger-line";
-            ledger.style.top = `${22 + lineY - y}px`;
-            button.append(ledger);
-          });
-          system.append(button);
-        });
-      });
-      addBeams(systems, beamGroups, layout);
-      events.forEach((event) => {
-        if (!event.tiedToNext) return;
-        event.notes.forEach((recordedNote) => {
-          const nextEvent = eventByNoteSegment.get(`${recordedNote.id}:${event.segmentIndex + 1}`);
-          if (nextEvent) addTie(systems, event, nextEvent, recordedNote, layout);
-        });
-      });
-      el.staff.append(systemsFragment);
     }
     const selected = state.notes.find((note) => note.id === state.selectedId);
     el.selectionBar.hidden = !selected;
@@ -1076,23 +1429,28 @@
       ? `${groups.length} ${groups.length === 1 ? "attack" : "attacks"} · ${measureCount} ${measureCount === 1 ? "measure" : "measures"} · C major · ${state.timeSignature} · ${beatUnitName()} = ${state.tempo}`
       : `C major · ${state.timeSignature} time · ${beatUnitName()} = ${state.tempo} BPM · 10 ms chord window`;
     updateStatus();
-    requestAnimationFrame(() => {
-      el.scoreViewport.scrollTop = Math.min(
-        previousViewportScroll.top,
-        Math.max(0, el.scoreViewport.scrollHeight - el.scoreViewport.clientHeight)
-      );
-      el.scoreViewport.scrollLeft = Math.min(
-        previousViewportScroll.left,
-        Math.max(0, el.scoreViewport.scrollWidth - el.scoreViewport.clientWidth)
-      );
-    });
+    el.staff.style.minHeight = "";
+    // System heights are fixed, so the final scroll range is available now.
+    // Move before the browser paints to avoid a visible top-then-bottom flash.
+    const maxTop = Math.max(0, el.scoreViewport.scrollHeight - el.scoreViewport.clientHeight);
+    const maxLeft = Math.max(0, el.scoreViewport.scrollWidth - el.scoreViewport.clientWidth);
+    if (shouldFollow) {
+      el.scoreViewport.scrollTop = maxTop;
+      el.scoreViewport.scrollLeft = 0;
+    } else {
+      el.scoreViewport.scrollTop = Math.min(previousViewportScroll.top, maxTop);
+      el.scoreViewport.scrollLeft = Math.min(previousViewportScroll.left, maxLeft);
+    }
   }
 
-  function scheduleScoreRender() {
+  function scheduleScoreRender(shouldFollow = false) {
+    scoreShouldFollow = scoreShouldFollow || shouldFollow;
     if (scoreRenderFrame !== null) return;
     scoreRenderFrame = requestAnimationFrame(() => {
       scoreRenderFrame = null;
-      renderScore();
+      const follow = scoreShouldFollow;
+      scoreShouldFollow = false;
+      renderScore(follow);
     });
   }
 
@@ -1128,11 +1486,11 @@
     }
   }
 
-  function startVoice(note) {
+  function startVoice(note, startAt = audioContext?.currentTime) {
     if (!audioContext || activeVoices.has(note)) return;
     const item = noteByName.get(note);
     const frequency = 440 * 2 ** ((item.midi - 69) / 12);
-    const now = audioContext.currentTime;
+    const now = Math.max(audioContext.currentTime, startAt || audioContext.currentTime);
     const voiceGain = audioContext.createGain();
     const configs = {
       piano: [{ type: "triangle", ratio: 1, level: 0.72 }, { type: "sine", ratio: 2, level: 0.21 }, { type: "sine", ratio: 3, level: 0.08 }],
@@ -1157,6 +1515,32 @@
     activeVoices.set(note, { oscillators, gain: voiceGain });
   }
 
+  function queueKeyboardVoice(note) {
+    if (!keyboardAudioBatch) {
+      keyboardAudioBatch = {
+        notes: new Set(),
+        audioReady: ensureAudio(),
+        timer: null
+      };
+      keyboardAudioBatch.timer = window.setTimeout(async () => {
+        const batch = keyboardAudioBatch;
+        keyboardAudioBatch = null;
+        if (!batch || !(await batch.audioReady) || !audioContext) return;
+        const heldNotes = [...batch.notes].filter((queuedNote) => activeSources.get(queuedNote)?.size);
+        if (!heldNotes.length) return;
+        const sharedStartTime = audioContext.currentTime + 0.005;
+        heldNotes.forEach((queuedNote) => startVoice(queuedNote, sharedStartTime));
+      }, CHORD_WINDOW_MS);
+    }
+    keyboardAudioBatch.notes.add(note);
+  }
+
+  function cancelKeyboardAudioBatch() {
+    if (!keyboardAudioBatch) return;
+    window.clearTimeout(keyboardAudioBatch.timer);
+    keyboardAudioBatch = null;
+  }
+
   function stopVoice(note) {
     const voice = activeVoices.get(note);
     if (!voice || !audioContext) return;
@@ -1173,8 +1557,77 @@
     if (key) key.classList.toggle("is-active", active);
   }
 
-  function recordNote(note, inputStartedAt = performance.now()) {
+  function bridgeShortGapTo(onsetBeat, silenceDurationMs = null) {
+    const previousGroup = onsetGroups()
+      .filter((group) => group.startBeat < onsetBeat - 0.001)
+      .sort((a, b) => a.startBeat - b.startBeat)
+      .at(-1);
+    if (!previousGroup) return;
+    const previousEnd = Math.max(...previousGroup.notes.map(
+      (recordedNote) => recordedNote.startBeat + (recordedNote.durationBeats || RHYTHM_QUANTUM)
+    ));
+    const silentGap = onsetBeat - previousEnd;
+    const isQuickKeyTransition = Number.isFinite(silenceDurationMs)
+      ? silenceDurationMs < REST_CONFIRM_DELAY_MS
+      : silentGap < MIN_REST_BEATS - 0.001;
+    if (silentGap <= 0.001 || !isQuickKeyTransition) return;
+    previousGroup.notes.forEach((recordedNote) => {
+      const joinedDuration = quantizeBeat(onsetBeat - recordedNote.startBeat);
+      recordedNote.durationBeats = Math.max(recordedNote.durationBeats || RHYTHM_QUANTUM, joinedDuration);
+      recordedNote.duration = millisecondsFromQuarterUnits(recordedNote.durationBeats) / 1000;
+    });
+  }
+
+  function bridgeAllShortGaps() {
+    const groups = onsetGroups();
+    for (let index = 1; index < groups.length; index += 1) {
+      const previousGroup = groups[index - 1];
+      const nextOnset = groups[index].startBeat;
+      const previousEnd = Math.max(...previousGroup.notes.map(
+        (recordedNote) => recordedNote.startBeat + (recordedNote.durationBeats || RHYTHM_QUANTUM)
+      ));
+      const silentGap = nextOnset - previousEnd;
+      if (silentGap <= 0.001 || silentGap >= MIN_REST_BEATS - 0.001) continue;
+      previousGroup.notes.forEach((recordedNote) => {
+        recordedNote.durationBeats = Math.max(
+          recordedNote.durationBeats || RHYTHM_QUANTUM,
+          quantizeBeat(nextOnset - recordedNote.startBeat)
+        );
+        recordedNote.duration = millisecondsFromQuarterUnits(recordedNote.durationBeats) / 1000;
+      });
+    }
+  }
+
+  function scheduleSilentMeasureConfirmation() {
+    cancelSilentMeasureTimer();
+    if (!state.recording || state.playing || activeSources.size || !recordingClock || !state.notes.length) return;
+    const capacity = measureCapacity();
+    const lastSoundEnd = Math.max(...state.notes.map(
+      (recordedNote) => recordedNote.startBeat + (recordedNote.durationBeats || RHYTHM_QUANTUM)
+    ));
+    const firstEmptyMeasureStart = Math.ceil((lastSoundEnd - 0.001) / capacity) * capacity;
+    let targetBeat = firstEmptyMeasureStart + capacity;
+    while (targetBeat <= (state.timelineEndBeat || 0) + 0.001) targetBeat += capacity;
+    const currentBeat = recordingClock.startBeat
+      + quarterUnitsFromMs(performance.now() - recordingClock.startedAt);
+    if (currentBeat > targetBeat + capacity) {
+      targetBeat += Math.floor((currentBeat - targetBeat) / capacity) * capacity;
+    }
+    const delay = Math.max(0, millisecondsFromQuarterUnits(targetBeat - currentBeat));
+    const clock = recordingClock;
+    silentMeasureTimer = window.setTimeout(() => {
+      silentMeasureTimer = null;
+      if (recordingClock !== clock || !state.recording || state.playing || activeSources.size) return;
+      state.timelineEndBeat = Math.max(state.timelineEndBeat || 0, targetBeat);
+      saveAll();
+      scheduleScoreRender(true);
+      scheduleSilentMeasureConfirmation();
+    }, delay + 8);
+  }
+
+  function recordNote(note, inputStartedAt = performance.now(), silenceDurationMs = null) {
     if (!state.recording || state.playing) return;
+    cancelSilentMeasureTimer();
     pushHistory();
     const item = noteByName.get(note);
     const hasHeldCompanion = [...activeSources.entries()].some(
@@ -1191,6 +1644,7 @@
           quantizeBeat(onset.startBeat - heldNote.startBeat + RHYTHM_QUANTUM)
         );
       });
+      bridgeShortGapTo(onset.startBeat, silenceDurationMs);
     }
     const id = `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     state.notes.push({
@@ -1204,6 +1658,7 @@
       startBeat: onset.startBeat,
       createdAt: Date.now()
     });
+    state.timelineEndBeat = Math.max(state.timelineEndBeat || 0, onset.startBeat);
     activeRecordIds.set(note, id);
     recordStartTimes.set(id, inputStartedAt);
     state.selectedId = null;
@@ -1228,11 +1683,17 @@
     activeRecordIds.delete(note);
     recordStartTimes.delete(id);
     saveAll();
-    scheduleScoreRender();
+    // The final duration can cross a bar or system boundary, so keep the
+    // newly created measure/row in view after the key is released as well.
+    scheduleScoreRender(true);
+    if (!activeSources.size) scheduleSilentMeasureConfirmation();
   }
 
   function pressNote(note, source, allowRecording = true, inputStartedAt = performance.now()) {
     if (!noteByName.has(note)) return;
+    const silenceDurationMs = Number.isFinite(silenceStartedAt)
+      ? Math.max(0, inputStartedAt - silenceStartedAt)
+      : null;
     let sources = activeSources.get(note);
     if (!sources) {
       sources = new Set();
@@ -1243,10 +1704,15 @@
     sources.add(source);
     if (!firstSource) return;
     setKeyActive(note, true);
-    ensureAudio().then((ready) => {
-      if (ready && activeSources.get(note)?.size) startVoice(note);
-    });
-    if (allowRecording) recordNote(note, inputStartedAt);
+    if (source.startsWith("keyboard:")) {
+      queueKeyboardVoice(note);
+    } else {
+      ensureAudio().then((ready) => {
+        if (ready && activeSources.get(note)?.size) startVoice(note);
+      });
+    }
+    if (allowRecording) recordNote(note, inputStartedAt, silenceDurationMs);
+    silenceStartedAt = null;
   }
 
   function releaseNote(note, source, inputEndedAt = performance.now()) {
@@ -1255,12 +1721,14 @@
     sources.delete(source);
     if (sources.size > 0) return;
     activeSources.delete(note);
+    if (!activeSources.size) silenceStartedAt = inputEndedAt;
     setKeyActive(note, false);
     stopVoice(note);
     finishRecordedNote(note, inputEndedAt);
   }
 
   function stopAllNotes(inputEndedAt = performance.now()) {
+    cancelKeyboardAudioBatch();
     activeSources.forEach((sources, note) => {
       setKeyActive(note, false);
       stopVoice(note);
@@ -1319,6 +1787,7 @@
     stopPlayback();
     state.redoStack.push(cloneNotes());
     state.notes = state.undoStack.pop();
+    state.timelineEndBeat = latestOnsetBeat();
     state.selectedId = null;
     resetRecordingClock();
     saveAll();
@@ -1331,6 +1800,7 @@
     stopPlayback();
     state.undoStack.push(cloneNotes());
     state.notes = state.redoStack.pop();
+    state.timelineEndBeat = latestOnsetBeat();
     state.selectedId = null;
     resetRecordingClock();
     saveAll();
@@ -1343,6 +1813,7 @@
     if (index < 0) return;
     pushHistory();
     const [deleted] = state.notes.splice(index, 1);
+    state.timelineEndBeat = latestOnsetBeat();
     state.selectedId = null;
     resetRecordingClock();
     saveAll();
@@ -1368,6 +1839,7 @@
     stopPlayback();
     pushHistory();
     state.notes = [];
+    state.timelineEndBeat = 0;
     state.selectedId = null;
     resetRecordingClock();
     saveAll();
@@ -1501,19 +1973,19 @@
       if (!key) return;
       event.preventDefault();
       key.setPointerCapture?.(event.pointerId);
-      pressNote(key.dataset.note, `pointer:${event.pointerId}`, true, event.timeStamp);
+      pressNote(key.dataset.note, `pointer:${event.pointerId}`, true, performance.now());
     });
     ["pointerup", "pointercancel", "lostpointercapture"].forEach((eventName) => {
       el.piano.addEventListener(eventName, (event) => {
         const key = event.target.closest("[data-note]");
-        if (key) releaseNote(key.dataset.note, `pointer:${event.pointerId}`, event.timeStamp);
+        if (key) releaseNote(key.dataset.note, `pointer:${event.pointerId}`, performance.now());
       });
     });
     el.piano.addEventListener("click", (event) => {
       const key = event.target.closest("[data-note]");
       if (!key || event.detail !== 0) return;
       const source = `activation:${Date.now()}`;
-      pressNote(key.dataset.note, source, true, event.timeStamp);
+      pressNote(key.dataset.note, source, true, performance.now());
       setTimeout(() => releaseNote(key.dataset.note, source, performance.now()), 260);
     });
     el.piano.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -1530,13 +2002,13 @@
       event.preventDefault();
       const source = `keyboard:${event.code}`;
       activeKeyboard.set(event.code, { note, source });
-      pressNote(note, source, true, event.timeStamp);
+      pressNote(note, source, true, performance.now());
     });
     window.addEventListener("keyup", (event) => {
       const active = activeKeyboard.get(event.code);
       if (!active) return;
       activeKeyboard.delete(event.code);
-      releaseNote(active.note, active.source, event.timeStamp);
+      releaseNote(active.note, active.source, performance.now());
     });
     window.addEventListener("blur", stopAllNotes);
     window.addEventListener("resize", () => {
@@ -1553,7 +2025,7 @@
     el.clearScore.addEventListener("click", clearComposition);
     el.exportOpen.addEventListener("click", openExport);
     el.staff.addEventListener("click", (event) => {
-      const noteButton = event.target.closest(".score-note");
+      const noteButton = event.target.closest(".score-note, .score-hit-target");
       if (!noteButton) return;
       state.selectedId = state.selectedId === noteButton.dataset.id ? null : noteButton.dataset.id;
       renderScore();
