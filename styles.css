@@ -71,9 +71,9 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .empty-note { color: var(--green); font-family: Georgia, serif; font-size: 46px; line-height: 1; }
 .empty-score p { margin: 8px 0 0; }
 .staff { display: none; min-width: 0; }
-.staff.has-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 20px; }
+.staff.has-notes { display: flex; flex-direction: column; align-items: flex-start; gap: 30px; }
 .score-system { position: relative; isolation: isolate; flex: 0 0 auto; height: 230px; max-width: none; }
-.engraved-system { height: 270px; }
+.engraved-system { height: 330px; }
 .score-engraving { position: absolute; inset: 0; pointer-events: none; }
 .score-engraving svg { display: block; overflow: visible; color: #111412; shape-rendering: geometricPrecision; text-rendering: geometricPrecision; }
 .score-hit-target { position: absolute; z-index: 10; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 50%; background: transparent; }
@@ -189,7 +189,11 @@ kbd { font-family: inherit; }
 .binding-input { width: 40px; height: 34px; padding: 0; text-align: center; text-transform: uppercase; border: 1px solid var(--line-dark); border-radius: 6px; }
 .form-error { margin-bottom: 12px; padding: 10px 12px; color: #772921; background: var(--red-soft); border-radius: 8px; font-size: 13px; }
 .export-body > p { color: var(--ink-soft); line-height: 1.5; }
-.export-actions { display: flex; gap: 10px; margin-top: 18px; }
+.export-sheet-preview { max-height: 270px; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.export-sheet-preview svg { display: block; width: 100%; height: auto; color: #111412; }
+.export-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.export-actions .button { flex: 1 1 145px; }
+.export-note { margin: 14px 0 0 !important; font-size: 12px; }
 .export-state { min-height: 22px; margin: 14px 0 0 !important; font-size: 13px; }
 .export-state.is-success { color: var(--green); font-weight: 750; }
 .export-state.is-error { color: #8a3029; font-weight: 750; }
@@ -232,4 +236,18 @@ kbd { font-family: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+  body { min-width: 0; background: #fff; }
+  .topbar, .hero, .instrument-panel, .card-header .score-actions, .selection-bar, .toast-region { display: none !important; }
+  .app-shell { width: 100%; padding: 0; }
+  .score-card { overflow: visible; border: 0; border-radius: 0; box-shadow: none; }
+  .card-header { padding: 0 0 8mm; }
+  .score-viewport { height: auto; padding: 0; overflow: visible; border: 0; contain: none; }
+  .staff.has-notes { gap: 6mm; }
+  .score-system { width: 100% !important; break-inside: avoid; page-break-inside: avoid; }
+  .score-engraving svg { width: 100%; height: auto; }
+  .score-hit-target { display: none !important; }
 }

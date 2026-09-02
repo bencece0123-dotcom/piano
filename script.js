@@ -26,27 +26,44 @@
   ];
   const FLAT_SPELLINGS = { "C#": "Db", "D#": "Eb", "F#": "Gb", "G#": "Ab", "A#": "Bb" };
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  const RANGE_OPTIONS = ["C1-C3", "C2-C4", "C3-C5", "C4-C6", "C5-C7", "C6-C8"];
   const DEFAULT_BINDINGS = [
     "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k",
     "o", "l", "p", ";", "'", "z", "x", "c", "v", "b", "n", "m"
   ];
 
-  const notesInRange = [];
-  let whiteIndex = -1;
-  for (let midi = 48; midi <= 72; midi += 1) {
+  function noteFromMidi(midi) {
     const pitchClass = NOTE_NAMES[midi % 12];
-    const isBlack = pitchClass.includes("#");
-    if (!isBlack) whiteIndex += 1;
-    notesInRange.push({
-      note: `${pitchClass}${Math.floor(midi / 12) - 1}`,
-      midi,
-      isBlack,
-      whiteIndex
-    });
+    return `${pitchClass}${Math.floor(midi / 12) - 1}`;
   }
 
-  const noteByName = new Map(notesInRange.map((item) => [item.note, item]));
-  const defaultBindingMap = Object.fromEntries(notesInRange.map((item, index) => [item.note, DEFAULT_BINDINGS[index]]));
+  function createRangeNotes(rangeKey) {
+    const [startLabel, endLabel] = rangeKey.split("-");
+    const startOctave = Number(startLabel.slice(1));
+    const endOctave = Number(endLabel.slice(1));
+    const startMidi = (startOctave + 1) * 12;
+    const endMidi = (endOctave + 1) * 12;
+    const result = [];
+    let whiteIndex = -1;
+    for (let midi = startMidi; midi <= endMidi; midi += 1) {
+      const pitchClass = NOTE_NAMES[midi % 12];
+      const isBlack = pitchClass.includes("#");
+      if (!isBlack) whiteIndex += 1;
+      result.push({ note: noteFromMidi(midi), midi, isBlack, whiteIndex });
+    }
+    return result;
+  }
+
+  const allPianoNotes = [];
+  for (let midi = 24; midi <= 108; midi += 1) {
+    const pitchClass = NOTE_NAMES[midi % 12];
+    const isBlack = pitchClass.includes("#");
+    allPianoNotes.push({ note: noteFromMidi(midi), midi, isBlack });
+  }
+
+  const noteByName = new Map(allPianoNotes.map((item) => [item.note, item]));
+  let notesInRange = createRangeNotes("C3-C5");
+  let defaultBindingMap = Object.fromEntries(notesInRange.map((item, index) => [item.note, DEFAULT_BINDINGS[index]]));
 
   const state = {
     notes: [],
@@ -59,6 +76,7 @@
     volume: 70,
     tempo: 100,
     timeSignature: "4/4",
+    range: "C3-C5",
     profileName: "",
     ideaTitle: "Untitled idea",
     timelineEndBeat: 0,
@@ -74,6 +92,8 @@
     undo: document.querySelector("#undo"),
     redo: document.querySelector("#redo"),
     exportOpen: document.querySelector("#export-open"),
+    importOpen: document.querySelector("#import-open"),
+    importFile: document.querySelector("#import-file"),
     emptyScore: document.querySelector("#empty-score"),
     staff: document.querySelector("#staff"),
     scoreViewport: document.querySelector("#score-viewport"),
@@ -87,6 +107,7 @@
     tempo: document.querySelector("#tempo"),
     tempoOutput: document.querySelector("#tempo-output"),
     timeSignature: document.querySelector("#time-signature-select"),
+    range: document.querySelector("#range-select"),
     piano: document.querySelector("#piano-keys"),
     pianoWrap: document.querySelector("#piano"),
     clearScore: document.querySelector("#clear-score"),
@@ -105,8 +126,9 @@
     exportSummary: document.querySelector("#export-summary"),
     exportPreview: document.querySelector("#export-preview"),
     exportState: document.querySelector("#export-state"),
-    downloadNotes: document.querySelector("#download-notes"),
-    copyNotes: document.querySelector("#copy-notes"),
+    printScore: document.querySelector("#print-score"),
+    downloadSvg: document.querySelector("#download-svg"),
+    downloadProject: document.querySelector("#download-project"),
     helpDialog: document.querySelector("#help-dialog"),
     helpButton: document.querySelector("#help-button")
   };
@@ -152,6 +174,38 @@
 
   function normalizeBinding(value) {
     return value.length === 1 ? value.toLowerCase() : "";
+  }
+
+  function rangeLabel(rangeKey = state.range) {
+    return rangeKey.replace("-", "–");
+  }
+
+  function applyRange(rangeKey, preserveBindings = true) {
+    const nextRange = RANGE_OPTIONS.includes(rangeKey) ? rangeKey : "C3-C5";
+    const previousBindings = preserveBindings
+      ? notesInRange.map((item, index) => state.bindings[item.note] || DEFAULT_BINDINGS[index])
+      : DEFAULT_BINDINGS;
+    notesInRange = createRangeNotes(nextRange);
+    defaultBindingMap = Object.fromEntries(
+      notesInRange.map((item, index) => [item.note, DEFAULT_BINDINGS[index]])
+    );
+    state.range = nextRange;
+    state.bindings = Object.fromEntries(
+      notesInRange.map((item, index) => [item.note, previousBindings[index] || DEFAULT_BINDINGS[index]])
+    );
+  }
+
+  function bestRangeForNotes(notes) {
+    const midis = notes.map((note) => note.midi).filter(Number.isFinite);
+    if (!midis.length) return state.range;
+    const center = (Math.min(...midis) + Math.max(...midis)) / 2;
+    return RANGE_OPTIONS.reduce((best, rangeKey) => {
+      const rangeNotes = createRangeNotes(rangeKey);
+      const rangeCenter = (rangeNotes[0].midi + rangeNotes.at(-1).midi) / 2;
+      return Math.abs(rangeCenter - center) < Math.abs(best.center - center)
+        ? { rangeKey, center: rangeCenter }
+        : best;
+    }, { rangeKey: "C3-C5", center: 60 }).rangeKey;
   }
 
   function cloneNotes(notes = state.notes) {
@@ -394,6 +448,7 @@
         volume: state.volume,
         tempo: state.tempo,
         timeSignature: state.timeSignature,
+        range: state.range,
         profileName: state.profileName,
         ideaTitle: state.ideaTitle,
         bindings: state.bindings
@@ -417,6 +472,7 @@
     if (!saved) return;
     try {
       const parsed = JSON.parse(saved);
+      if (RANGE_OPTIONS.includes(parsed.range)) applyRange(parsed.range, false);
       if (Array.isArray(parsed.notes)) {
         const restoredOnsets = new Map();
         let restoredBeat = 0;
@@ -461,6 +517,16 @@
                 ? Math.max(0, cleanBeat(item.rawDurationBeats))
                 : null,
               joinToOnsetId: typeof item.joinToOnsetId === "string" ? item.joinToOnsetId : null,
+              preferredStaff: ["treble", "bass"].includes(item.preferredStaff) ? item.preferredStaff : null,
+              preferredVoice: typeof item.preferredVoice === "string" && item.preferredVoice ? item.preferredVoice : null,
+              sourceType: item.sourceType === "import" ? "import" : "recording",
+              tupletId: typeof item.tupletId === "string" ? item.tupletId : undefined,
+              tupletIndex: Number.isFinite(item.tupletIndex) ? item.tupletIndex : undefined,
+              tupletCount: Number.isFinite(item.tupletCount) ? item.tupletCount : undefined,
+              tupletNotesOccupied: Number.isFinite(item.tupletNotesOccupied) ? item.tupletNotesOccupied : undefined,
+              tupletBaseSlug: item.tupletBaseSlug === "eighth" ? "eighth" : item.tupletBaseSlug === "sixteenth" ? "sixteenth" : undefined,
+              tupletBaseDuration: Number.isFinite(item.tupletBaseDuration) ? item.tupletBaseDuration : undefined,
+              tupletUnitBeats: Number.isFinite(item.tupletUnitBeats) ? item.tupletUnitBeats : undefined,
               createdAt
             };
           });
@@ -518,6 +584,7 @@
     el.piano.replaceChildren();
     notesInRange.filter((item) => !item.isBlack).forEach((item) => el.piano.append(createKeyButton(item)));
     notesInRange.filter((item) => item.isBlack).forEach((item) => el.piano.append(createKeyButton(item)));
+    el.piano.setAttribute("aria-label", `Playable piano from ${rangeLabel()}`);
   }
 
   function renderBindings(bindings = state.bindings) {
@@ -562,7 +629,9 @@
   }
 
   function noteStaff(recordedNote) {
-    return staffByRecordedNote.get(recordedNote.id) || (recordedNote.midi < 60 ? "bass" : "treble");
+    return staffByRecordedNote.get(recordedNote.id)
+      || recordedNote.preferredStaff
+      || (recordedNote.midi < 60 ? "bass" : "treble");
   }
 
   function updateChordStaffAssignments(groups) {
@@ -572,11 +641,11 @@
       const lowest = Math.min(...midis);
       const highest = Math.max(...midis);
       const isCompactChord = group.notes.length > 1 && highest - lowest <= 12;
-      const sharedStaff = isCompactChord
+      const sharedStaff = isCompactChord && !group.notes.some((note) => note.preferredStaff)
         ? (midis.reduce((sum, midi) => sum + midi, 0) / midis.length < 60 ? "bass" : "treble")
         : null;
       group.notes.forEach((note) => {
-        staffByRecordedNote.set(note.id, sharedStaff || (note.midi < 60 ? "bass" : "treble"));
+        staffByRecordedNote.set(note.id, note.preferredStaff || sharedStaff || (note.midi < 60 ? "bass" : "treble"));
       });
     });
   }
@@ -586,15 +655,19 @@
     const viewportWidth = el.scoreViewport.clientWidth || 960;
     const horizontalPadding = viewportWidth <= 780 ? 40 : 68;
     const contentWidth = Math.max(280, viewportWidth - horizontalPadding);
-    const segmentCounts = new Map();
+    const measureColumns = new Map();
     buildEngravedSegments(totalMeasures * capacity).forEach((segment) => {
       const measure = Math.floor(segment.startBeat / capacity);
-      segmentCounts.set(measure, (segmentCounts.get(measure) || 0) + 1);
+      if (!measureColumns.has(measure)) measureColumns.set(measure, new Set());
+      measureColumns.get(measure).add(cleanBeat(segment.startBeat));
     });
-    const densestMeasure = Math.max(1, ...segmentCounts.values());
-    // Give every rhythmic attack enough horizontal room for its head, stem,
-    // accidental, beam and tuplet number. Dense measures become their own row.
-    const minimumMeasureWidth = Math.max(420, capacity * BEAT_SPACING, 128 + densestMeasure * 30);
+    const densestMeasure = Math.max(1, ...[...measureColumns.values()].map((columns) => columns.size));
+    // Count rhythmic columns instead of every voice. This keeps simultaneous
+    // notes aligned while reserving enough room for accidentals and beams.
+    const minimumMeasureWidth = Math.min(
+      920,
+      Math.max(440, capacity * BEAT_SPACING, 180 + densestMeasure * 42)
+    );
     const measuresPerSystem = Math.max(1, Math.min(4, Math.floor((contentWidth - 20) / minimumMeasureWidth)));
     const measureWidth = minimumMeasureWidth;
     const systemWidth = measuresPerSystem * measureWidth + 20;
@@ -607,7 +680,7 @@
       beatSpacing,
       measureWidth,
       systemWidth,
-      systemHeight: 270,
+      systemHeight: 330,
       systemCount: Math.ceil(totalMeasures / measuresPerSystem)
     };
   }
@@ -1097,30 +1170,39 @@
     const eventsByStaff = { treble: [], bass: [] };
     onsetGroups().forEach((group) => {
       ["treble", "bass"].forEach((staff) => {
-        const notes = group.notes.filter((note) => noteStaff(note) === staff).sort((a, b) => a.midi - b.midi);
-        if (!notes.length) return;
-        const tupletNote = notes.find((note) => note.tupletId);
-        const tuplet = tupletNote
-          ? {
-            id: tupletNote.tupletId,
-            index: tupletNote.tupletIndex,
-            count: tupletNote.tupletCount,
-            notesOccupied: tupletNote.tupletNotesOccupied,
-            baseSlug: tupletNote.tupletBaseSlug,
-            baseDuration: tupletNote.tupletBaseDuration,
-            unitBeats: tupletNote.tupletUnitBeats
-          }
-          : null;
-        const durationBeats = tuplet
-          ? tuplet.unitBeats
-          : Math.max(...notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
-        eventsByStaff[staff].push({
-          id: `${group.id}-${staff}`,
-          startBeat: group.startBeat,
-          durationBeats,
-          endBeat: group.startBeat + durationBeats,
-          notes,
-          tuplet
+        const notesByVoice = new Map();
+        group.notes
+          .filter((note) => noteStaff(note) === staff)
+          .sort((a, b) => a.midi - b.midi)
+          .forEach((note) => {
+            const voiceKey = note.preferredVoice || "recorded";
+            if (!notesByVoice.has(voiceKey)) notesByVoice.set(voiceKey, []);
+            notesByVoice.get(voiceKey).push(note);
+          });
+        notesByVoice.forEach((notes, voiceKey) => {
+          const tupletNote = notes.find((note) => note.tupletId);
+          const tuplet = tupletNote
+            ? {
+              id: tupletNote.tupletId,
+              index: tupletNote.tupletIndex,
+              count: tupletNote.tupletCount,
+              notesOccupied: tupletNote.tupletNotesOccupied,
+              baseSlug: tupletNote.tupletBaseSlug,
+              baseDuration: tupletNote.tupletBaseDuration,
+              unitBeats: tupletNote.tupletUnitBeats
+            }
+            : null;
+          const durationBeats = tuplet
+            ? tuplet.unitBeats
+            : Math.max(...notes.map((note) => note.durationBeats || RHYTHM_QUANTUM));
+          eventsByStaff[staff].push({
+            id: `${group.id}-${staff}-${voiceKey}`,
+            startBeat: group.startBeat,
+            durationBeats,
+            endBeat: group.startBeat + durationBeats,
+            notes,
+            tuplet
+          });
         });
       });
     });
@@ -1170,6 +1252,13 @@
             });
           });
         });
+      lanesByStaff[staff].sort((first, second) => {
+        const averageMidi = (lane) => {
+          const notes = lane.events.flatMap((event) => event.notes);
+          return notes.length ? notes.reduce((sum, note) => sum + note.midi, 0) / notes.length : 0;
+        };
+        return averageMidi(second) - averageMidi(first);
+      });
       if (!lanesByStaff[staff].length) lanesByStaff[staff].push({ endBeat: 0, events: [], pieces: [] });
     });
     return lanesByStaff;
@@ -1242,7 +1331,10 @@
           id: `confirmed-rest-${staff}-${segment.startBeat}`,
           notes: [],
           isRest: true,
-          hiddenRest: restStaffAt(segment.startBeat, groups) !== staff
+          // A completely silent measure needs one centered whole-measure rest
+          // on each stave of a piano grand staff. Shorter rests stay only in
+          // the active stave so two voices never print duplicate symbols.
+          hiddenRest: !segment.spec.fullMeasure && restStaffAt(segment.startBeat, groups) !== staff
         });
         cursor = Math.max(cursor, segment.startBeat + segment.spec.beats);
       });
@@ -1306,7 +1398,10 @@
         }
         return furthest;
       }, null);
-      vexNote.setStemDirection(furthestNote.step >= middleLineStep ? VF.Stem.DOWN : VF.Stem.UP);
+      const voiceDirection = laneCount > 1
+        ? (laneIndex < laneCount / 2 ? VF.Stem.UP : VF.Stem.DOWN)
+        : null;
+      vexNote.setStemDirection(voiceDirection || (furthestNote.step >= middleLineStep ? VF.Stem.DOWN : VF.Stem.UP));
     }
 
     const idToIndex = new Map();
@@ -1430,8 +1525,8 @@
         const measureStart = measureIndex * layout.capacity;
         const measureEnd = measureStart + layout.capacity;
         const x = 10 + localMeasure * layout.measureWidth;
-        const trebleStave = new VF.Stave(x, 34, layout.measureWidth);
-        const bassStave = new VF.Stave(x, 144, layout.measureWidth);
+        const trebleStave = new VF.Stave(x, 48, layout.measureWidth);
+        const bassStave = new VF.Stave(x, 190, layout.measureWidth);
         if (localMeasure === 0) {
           trebleStave.addClef("treble").addTimeSignature(state.timeSignature);
           bassStave.addClef("bass").addTimeSignature(state.timeSignature);
@@ -1738,6 +1833,7 @@
       .sort((a, b) => a.startBeat - b.startBeat)
       .at(-1);
     if (!previousGroup) return;
+    if (previousGroup.notes.every((recordedNote) => recordedNote.sourceType === "import")) return;
     const previousEnd = Math.max(...previousGroup.notes.map(
       (recordedNote) => recordedNote.startBeat + (recordedNote.durationBeats || RHYTHM_QUANTUM)
     ));
@@ -1758,6 +1854,7 @@
     const groups = onsetGroups();
     for (let index = 1; index < groups.length; index += 1) {
       const previousGroup = groups[index - 1];
+      if (previousGroup.notes.every((recordedNote) => recordedNote.sourceType === "import")) continue;
       const nextOnset = groups[index].startBeat;
       const previousEnd = Math.max(...previousGroup.notes.map(
         (recordedNote) => recordedNote.startBeat + (recordedNote.durationBeats || RHYTHM_QUANTUM)
@@ -2093,15 +2190,72 @@
     }).join("\n");
   }
 
+  function safeFileName() {
+    return state.ideaTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "melody-idea";
+  }
+
+  function projectSnapshot() {
+    return {
+      format: "melody-catcher-project",
+      version: 2,
+      ideaTitle: state.ideaTitle,
+      instrument: state.instrument,
+      range: state.range,
+      timeSignature: state.timeSignature,
+      tempo: state.tempo,
+      volume: state.volume,
+      timelineEndBeat: state.timelineEndBeat,
+      bindings: state.bindings,
+      notes: cloneNotes()
+    };
+  }
+
+  function scoreSvgMarkup() {
+    const sourceSvgs = [...el.staff.querySelectorAll(".score-engraving svg")];
+    if (!sourceSvgs.length) throw new Error("There is no engraved score to export.");
+    const gap = 22;
+    const headerHeight = 72;
+    const widths = sourceSvgs.map((svg) => Number(svg.getAttribute("width")) || svg.viewBox?.baseVal?.width || 960);
+    const heights = sourceSvgs.map((svg) => Number(svg.getAttribute("height")) || svg.viewBox?.baseVal?.height || 330);
+    const width = Math.max(...widths);
+    const height = headerHeight + heights.reduce((sum, value) => sum + value, 0) + gap * (sourceSvgs.length - 1);
+    let top = headerHeight;
+    const systems = sourceSvgs.map((svg, index) => {
+      const inner = svg.innerHTML;
+      const result = `<g transform="translate(0 ${top})">${inner}</g>`;
+      top += heights[index] + gap;
+      return result;
+    }).join("");
+    const escapeXml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
+    const title = escapeXml(state.ideaTitle);
+    const meta = escapeXml(el.scoreMeta.textContent);
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${title}"><rect width="100%" height="100%" fill="#fff"/><text x="10" y="30" fill="#111412" font-family="Georgia, Times New Roman, serif" font-size="24">${title}</text><text x="10" y="51" fill="#5d635f" font-family="Arial, sans-serif" font-size="11">${meta}</text>${systems}</svg>`;
+  }
+
+  function downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function openExport() {
     if (!state.notes.length) return;
     const groups = onsetGroups();
     const beats = Math.max(...groups.map((group) => group.startBeat + group.durationBeats));
     const measures = Math.ceil(beats / measureCapacity());
-    el.exportSummary.textContent = `${state.notes.length} ${state.notes.length === 1 ? "note" : "notes"} across ${measures} ${measures === 1 ? "measure" : "measures"} at ${state.tempo} BPM from ${state.ideaTitle}.`;
-    el.exportPreview.value = noteListText();
+    el.exportSummary.textContent = `${state.ideaTitle} has ${measures} ${measures === 1 ? "measure" : "measures"}. The preview below is the artwork that will be printed or downloaded.`;
+    try {
+      el.exportPreview.innerHTML = scoreSvgMarkup();
+    } catch (error) {
+      el.exportPreview.textContent = "The score preview is not ready yet.";
+    }
     el.exportState.className = "export-state";
-    el.exportState.textContent = "Choose an export option.";
+    el.exportState.textContent = "Choose a printable format above.";
     openDialog(el.exportDialog);
   }
 
@@ -2110,38 +2264,331 @@
     el.exportState.textContent = message;
   }
 
-  async function copyNotes() {
+  function printScore() {
+    closeDialog(el.exportDialog);
+    showToast("Opening the print window. Choose Save as PDF to keep a PDF copy.");
+    window.setTimeout(() => window.print(), 60);
+  }
+
+  function downloadScoreSvg() {
     try {
-      await navigator.clipboard.writeText(noteListText());
-      setExportState("Copied. Paste the note list wherever you keep ideas.", "success");
+      const svg = scoreSvgMarkup();
+      downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), `${safeFileName()}.svg`);
+      setExportState("Downloaded the engraved score as a printable SVG.", "success");
     } catch (error) {
-      try {
-        el.exportPreview.select();
-        const copied = document.execCommand("copy");
-        if (!copied) throw new Error("Copy failed");
-        setExportState("Copied. Paste the note list wherever you keep ideas.", "success");
-      } catch (fallbackError) {
-        setExportState("Copy was blocked. Select the note list and copy it manually.", "error");
-      }
+      setExportState("The SVG could not be created. Close this window and try Export again.", "error");
     }
   }
 
-  function downloadNotes() {
+  function downloadProject() {
     try {
-      const lines = [state.ideaTitle, `Instrument: ${instrumentLabel()}`, "Range: C3–C5", "Key: C major", `Time signature: ${state.timeSignature}`, `Tempo: ${beatUnitName()} = ${state.tempo} BPM (${tempoWord()})`, "Rhythm: sixteenth-note grid with standard values, rests, dots, and ties", `Notes (${state.notes.length}):`, noteListText(), "", "Created with Melody Catcher"];
-      const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      const safeTitle = state.ideaTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "melody-idea";
-      anchor.href = url;
-      anchor.download = `${safeTitle}.txt`;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      setExportState("Downloaded as a text file.", "success");
+      const json = JSON.stringify(projectSnapshot(), null, 2);
+      downloadBlob(new Blob([json], { type: "application/json;charset=utf-8" }), `${safeFileName()}.melody.json`);
+      setExportState("Downloaded an editable project you can import later.", "success");
     } catch (error) {
-      setExportState("The download could not start. Try copying the note list instead.", "error");
+      setExportState("The editable project could not be downloaded. Please try again.", "error");
+    }
+  }
+
+  function xmlChildren(node, name) {
+    return [...(node?.children || [])].filter((child) => child.localName === name);
+  }
+
+  function xmlChild(node, name) {
+    return xmlChildren(node, name)[0] || null;
+  }
+
+  function xmlText(node, name) {
+    return xmlChild(node, name)?.textContent?.trim() || "";
+  }
+
+  function musicXmlDuration(noteNode, divisions) {
+    const durationValue = Number(xmlText(noteNode, "duration"));
+    if (Number.isFinite(durationValue) && durationValue > 0) return durationValue / divisions;
+    const type = xmlText(noteNode, "type");
+    const base = { whole: 4, half: 2, quarter: 1, eighth: 0.5, "16th": 0.25, "32nd": 0.125 }[type] || 1;
+    const dots = xmlChildren(noteNode, "dot").length;
+    let value = base;
+    let addition = base / 2;
+    for (let index = 0; index < dots; index += 1) {
+      value += addition;
+      addition /= 2;
+    }
+    const modification = xmlChild(noteNode, "time-modification");
+    const actual = Number(xmlText(modification, "actual-notes"));
+    const normal = Number(xmlText(modification, "normal-notes"));
+    return actual > 0 && normal > 0 ? value * normal / actual : value;
+  }
+
+  function parseMusicXml(text) {
+    const xml = new DOMParser().parseFromString(text, "application/xml");
+    if (xml.querySelector("parsererror") || xml.documentElement?.localName !== "score-partwise") {
+      throw new Error("This is not a readable MusicXML partwise score.");
+    }
+
+    const partNames = new Map();
+    [...xml.getElementsByTagName("score-part")].forEach((part) => {
+      partNames.set(part.getAttribute("id"), xmlText(part, "part-name"));
+    });
+    const parts = [...xml.getElementsByTagName("part")];
+    const pianoPart = parts.find((part) => /piano|keyboard/i.test(partNames.get(part.getAttribute("id")) || "")) || parts[0];
+    if (!pianoPart) throw new Error("No playable part was found in this MusicXML file.");
+
+    const importedNotes = [];
+    const onsets = new Map();
+    const activeTuplets = new Map();
+    const openTies = new Map();
+    let divisions = 1;
+    let importedTime = "4/4";
+    let currentMeasureTime = "4/4";
+    let foundTimeSignature = false;
+    let importedTempo = 100;
+    let measureStart = 0;
+    let serial = 0;
+    let skipped = 0;
+
+    const soundWithTempo = [...xml.getElementsByTagName("sound")].find((sound) => Number(sound.getAttribute("tempo")) > 0);
+    if (soundWithTempo) importedTempo = Math.round(Number(soundWithTempo.getAttribute("tempo")));
+    const perMinute = [...xml.getElementsByTagName("per-minute")][0]?.textContent;
+    if (!soundWithTempo && Number(perMinute) > 0) importedTempo = Math.round(Number(perMinute));
+
+    xmlChildren(pianoPart, "measure").forEach((measure) => {
+      const attributes = xmlChild(measure, "attributes");
+      const nextDivisions = Number(xmlText(attributes, "divisions"));
+      if (nextDivisions > 0) divisions = nextDivisions;
+      const timeNode = xmlChild(attributes, "time");
+      const candidateTime = `${xmlText(timeNode, "beats")}/${xmlText(timeNode, "beat-type")}`;
+      if (TIME_SIGNATURES.includes(candidateTime)) {
+        currentMeasureTime = candidateTime;
+        if (!foundTimeSignature) {
+          importedTime = candidateTime;
+          foundTimeSignature = true;
+        }
+      }
+      const [numerator, denominator] = currentMeasureTime.split("/").map(Number);
+      const measureBeats = numerator * 4 / denominator;
+      let cursor = measureStart;
+      let lastNoteStart = cursor;
+      let furthestCursor = cursor;
+      let lastTupletAtStart = new Map();
+
+      [...measure.children].forEach((node) => {
+        if (node.localName === "backup" || node.localName === "forward") {
+          const amount = Number(xmlText(node, "duration")) / divisions;
+          if (Number.isFinite(amount)) cursor += node.localName === "backup" ? -amount : amount;
+          cursor = Math.max(measureStart, cursor);
+          return;
+        }
+        if (node.localName !== "note" || xmlChild(node, "grace")) return;
+        const durationBeats = musicXmlDuration(node, divisions);
+        const isChord = Boolean(xmlChild(node, "chord"));
+        const startBeat = cleanBeat(isChord ? lastNoteStart : cursor);
+        if (!isChord) lastNoteStart = startBeat;
+        if (!xmlChild(node, "rest")) {
+          const pitch = xmlChild(node, "pitch");
+          const step = xmlText(pitch, "step");
+          const alter = Number(xmlText(pitch, "alter") || 0);
+          const octave = Number(xmlText(pitch, "octave"));
+          const pitchClass = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[step];
+          const midi = (octave + 1) * 12 + pitchClass + alter;
+          if (!Number.isFinite(midi) || !noteByName.has(noteFromMidi(midi))) {
+            skipped += 1;
+          } else {
+            const canonicalNote = noteFromMidi(midi);
+            const spelling = `${step}${alter === 1 ? "#" : alter === -1 ? "b" : ""}${octave}`;
+            const onsetKey = startBeat.toFixed(6);
+            if (!onsets.has(onsetKey)) onsets.set(onsetKey, `import-onset-${onsets.size + 1}`);
+            const imported = {
+              id: `import-note-${serial + 1}`,
+              onsetId: onsets.get(onsetKey),
+              note: canonicalNote,
+              spelling: /^[A-G](?:#|b)?\d$/.test(spelling) ? spelling : canonicalNote,
+              midi,
+              duration: millisecondsFromQuarterUnits(durationBeats) / 1000,
+              durationBeats: cleanBeat(durationBeats),
+              startBeat,
+              rawStartBeat: null,
+              rawDurationBeats: null,
+              joinToOnsetId: null,
+              preferredStaff: xmlText(node, "staff") === "2" ? "bass" : xmlText(node, "staff") === "1" ? "treble" : null,
+              preferredVoice: xmlText(node, "voice") || null,
+              sourceType: "import",
+              createdAt: Date.now() + serial
+            };
+
+            const modification = xmlChild(node, "time-modification");
+            const actual = Number(xmlText(modification, "actual-notes"));
+            const normal = Number(xmlText(modification, "normal-notes"));
+            if (actual > 1 && normal > 0) {
+              const type = xmlText(node, "type");
+              const baseSlug = type === "eighth" ? "eighth" : "sixteenth";
+              const voice = xmlText(node, "voice") || "1";
+              const notationTuplet = [...node.getElementsByTagName("tuplet")][0];
+              const number = notationTuplet?.getAttribute("number") || "1";
+              const key = `${voice}-${number}-${actual}-${normal}-${baseSlug}`;
+              const sameStart = lastTupletAtStart.get(`${onsetKey}-${key}`);
+              if (sameStart) {
+                Object.assign(imported, sameStart);
+              } else {
+                const tupleType = notationTuplet?.getAttribute("type");
+                if (tupleType === "start" || !activeTuplets.has(key)) {
+                  activeTuplets.set(key, { id: `import-tuplet-${serial + 1}`, index: 0 });
+                }
+                const active = activeTuplets.get(key);
+                const tupletData = {
+                  tupletId: active.id,
+                  tupletIndex: active.index,
+                  tupletCount: actual,
+                  tupletNotesOccupied: normal,
+                  tupletBaseSlug: baseSlug,
+                  tupletBaseDuration: baseSlug === "eighth" ? 0.5 : 0.25,
+                  tupletUnitBeats: cleanBeat(durationBeats)
+                };
+                Object.assign(imported, tupletData);
+                lastTupletAtStart.set(`${onsetKey}-${key}`, tupletData);
+                active.index += 1;
+                if (tupleType === "stop" || active.index >= actual) activeTuplets.delete(key);
+              }
+            }
+            const voice = xmlText(node, "voice") || "1";
+            const staffNumber = xmlText(node, "staff") || "1";
+            const tieTypes = xmlChildren(node, "tie").map((tie) => tie.getAttribute("type"));
+            const tieKey = `${voice}-${staffNumber}-${midi}`;
+            const tiedFromPrevious = tieTypes.includes("stop") && openTies.has(tieKey);
+            if (tiedFromPrevious) {
+              const previous = openTies.get(tieKey);
+              previous.durationBeats = cleanBeat(previous.durationBeats + durationBeats);
+              previous.duration = millisecondsFromQuarterUnits(previous.durationBeats) / 1000;
+              if (!tieTypes.includes("start")) openTies.delete(tieKey);
+            } else {
+              importedNotes.push(imported);
+              serial += 1;
+              if (tieTypes.includes("start")) openTies.set(tieKey, imported);
+            }
+          }
+        }
+        if (!isChord) cursor = cleanBeat(cursor + durationBeats);
+        furthestCursor = Math.max(furthestCursor, cursor, startBeat + durationBeats);
+      });
+
+      const implicit = measure.getAttribute("implicit") === "yes";
+      measureStart = cleanBeat(implicit ? furthestCursor : Math.max(furthestCursor, measureStart + measureBeats));
+    });
+
+    if (!importedNotes.length) throw new Error("No notes between C1 and C8 were found in this score.");
+    const title = [...xml.getElementsByTagName("movement-title")][0]?.textContent?.trim()
+      || [...xml.getElementsByTagName("work-title")][0]?.textContent?.trim()
+      || "Imported score";
+    return {
+      ideaTitle: title.slice(0, 60),
+      instrument: "piano",
+      range: bestRangeForNotes(importedNotes),
+      timeSignature: importedTime,
+      tempo: Math.max(40, Math.min(200, importedTempo)),
+      volume: state.volume,
+      timelineEndBeat: measureStart,
+      notes: importedNotes,
+      skipped
+    };
+  }
+
+  function normalizeProject(data) {
+    if (!data || !Array.isArray(data.notes)) throw new Error("This project file has no notes.");
+    const notes = data.notes.map((item, index) => {
+      const named = typeof item.note === "string" ? noteByName.get(item.note) : null;
+      if (!named) return null;
+      const startBeat = Math.max(0, cleanBeat(Number(item.startBeat) || 0));
+      const durationBeats = Math.max(RHYTHM_QUANTUM, cleanBeat(Number(item.durationBeats) || 1));
+      return {
+        ...item,
+        id: String(item.id || `project-note-${index + 1}`),
+        onsetId: String(item.onsetId || `project-onset-${index + 1}`),
+        note: named.note,
+        spelling: typeof item.spelling === "string" && /^[A-G](?:#|b)?\d$/.test(item.spelling) ? item.spelling : named.note,
+        midi: named.midi,
+        startBeat,
+        durationBeats,
+        duration: millisecondsFromQuarterUnits(durationBeats) / 1000,
+        rawStartBeat: Number.isFinite(item.rawStartBeat) ? cleanBeat(item.rawStartBeat) : null,
+        rawDurationBeats: Number.isFinite(item.rawDurationBeats) ? cleanBeat(item.rawDurationBeats) : null,
+        preferredStaff: ["treble", "bass"].includes(item.preferredStaff) ? item.preferredStaff : null,
+        preferredVoice: typeof item.preferredVoice === "string" && item.preferredVoice ? item.preferredVoice : null,
+        sourceType: item.sourceType === "import" ? "import" : "recording",
+        createdAt: Number.isFinite(item.createdAt) ? item.createdAt : Date.now() + index
+      };
+    }).filter(Boolean);
+    if (!notes.length) throw new Error("This project contains no supported piano notes.");
+    return {
+      ideaTitle: typeof data.ideaTitle === "string" && data.ideaTitle.trim() ? data.ideaTitle.trim().slice(0, 60) : "Imported score",
+      instrument: ["piano", "electric", "organ"].includes(data.instrument) ? data.instrument : "piano",
+      range: RANGE_OPTIONS.includes(data.range) ? data.range : bestRangeForNotes(notes),
+      timeSignature: TIME_SIGNATURES.includes(data.timeSignature) ? data.timeSignature : "4/4",
+      tempo: Number.isFinite(data.tempo) ? Math.max(40, Math.min(200, Math.round(data.tempo))) : 100,
+      volume: Number.isFinite(data.volume) ? Math.max(0, Math.min(100, data.volume)) : state.volume,
+      timelineEndBeat: Number.isFinite(data.timelineEndBeat) ? Math.max(0, cleanBeat(data.timelineEndBeat)) : 0,
+      bindings: data.bindings,
+      notes,
+      skipped: 0
+    };
+  }
+
+  function applyImportedComposition(imported) {
+    stopAllNotes();
+    pushHistory();
+    applyRange(imported.range, false);
+    state.notes = imported.notes;
+    state.instrument = imported.instrument;
+    state.timeSignature = imported.timeSignature;
+    state.tempo = imported.tempo;
+    state.volume = imported.volume;
+    state.ideaTitle = imported.ideaTitle;
+    if (imported.bindings && typeof imported.bindings === "object") {
+      const values = notesInRange.map((item, index) => normalizeBinding(String(imported.bindings[item.note] || "")) || DEFAULT_BINDINGS[index]);
+      if (new Set(values).size === values.length && !values.includes(" ")) {
+        state.bindings = Object.fromEntries(notesInRange.map((item, index) => [item.note, values[index]]));
+      }
+    }
+    state.timelineEndBeat = Math.max(
+      imported.timelineEndBeat || 0,
+      ...state.notes.map((note) => note.startBeat + note.durationBeats)
+    );
+    state.selectedId = null;
+    resetRecordingClock();
+    renderPiano();
+    renderBindings();
+    el.instrumentSelect.value = state.instrument;
+    el.instrumentTitle.textContent = instrumentLabel();
+    el.range.value = state.range;
+    el.timeSignature.value = state.timeSignature;
+    el.tempo.value = String(state.tempo);
+    el.tempoOutput.value = `${state.tempo} BPM`;
+    el.volume.value = String(state.volume);
+    el.volumeOutput.value = `${state.volume}%`;
+    saveAll();
+    renderScore();
+  }
+
+  async function importScoreFile() {
+    const file = el.importFile.files?.[0];
+    if (!file) return;
+    el.importOpen.disabled = true;
+    setAppStatus("Importing score…", "playing");
+    try {
+      const text = await file.text();
+      const trimmed = text.trim();
+      const imported = trimmed.startsWith("{")
+        ? normalizeProject(JSON.parse(trimmed))
+        : parseMusicXml(text);
+      applyImportedComposition(imported);
+      const skippedMessage = imported.skipped ? ` ${imported.skipped} unsupported notes were skipped.` : "";
+      showToast(`Imported ${imported.notes.length} notes from ${file.name}.${skippedMessage}`);
+    } catch (error) {
+      console.error(error);
+      showToast(error instanceof SyntaxError ? "This project file is not valid JSON." : error.message || "The score could not be imported.", "error");
+      updateStatus();
+    } finally {
+      el.importFile.value = "";
+      el.importOpen.disabled = false;
     }
   }
 
@@ -2205,6 +2652,8 @@
     el.redo.addEventListener("click", redo);
     el.deleteNote.addEventListener("click", deleteSelectedNote);
     el.clearScore.addEventListener("click", clearComposition);
+    el.importOpen.addEventListener("click", () => el.importFile.click());
+    el.importFile.addEventListener("change", importScoreFile);
     el.exportOpen.addEventListener("click", openExport);
     el.staff.addEventListener("click", (event) => {
       const noteButton = event.target.closest(".score-note, .score-hit-target");
@@ -2225,6 +2674,17 @@
       saveAll();
       stopAllNotes();
       showToast(`${instrumentLabel()} selected.`);
+    });
+    el.range.addEventListener("change", () => {
+      stopAllNotes();
+      applyRange(el.range.value, true);
+      renderPiano();
+      renderBindings();
+      saveAll();
+      requestAnimationFrame(() => {
+        el.pianoWrap.scrollLeft = Math.max(0, (el.pianoWrap.scrollWidth - el.pianoWrap.clientWidth) / 2);
+      });
+      showToast(`${rangeLabel()} selected. Your existing score stays unchanged.`);
     });
     el.volume.addEventListener("input", () => {
       state.volume = Number(el.volume.value);
@@ -2279,8 +2739,9 @@
       event.target.value = formatBinding(raw);
     });
     el.helpButton.addEventListener("click", () => openDialog(el.helpDialog));
-    el.downloadNotes.addEventListener("click", downloadNotes);
-    el.copyNotes.addEventListener("click", copyNotes);
+    el.printScore.addEventListener("click", printScore);
+    el.downloadSvg.addEventListener("click", downloadScoreSvg);
+    el.downloadProject.addEventListener("click", downloadProject);
     document.querySelectorAll(".modal-close").forEach((button) => button.addEventListener("click", () => closeDialog(button.closest("dialog"))));
     document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
       if (event.target === dialog) closeDialog(dialog);
@@ -2299,6 +2760,7 @@
     el.tempo.value = String(state.tempo);
     el.tempoOutput.value = `${state.tempo} BPM`;
     el.timeSignature.value = state.timeSignature;
+    el.range.value = state.range;
     renderScore();
     requestAnimationFrame(() => {
       el.pianoWrap.scrollLeft = Math.max(0, (el.pianoWrap.scrollWidth - el.pianoWrap.clientWidth) / 2);

@@ -1,0 +1,29 @@
+{
+  "format": "melody-catcher-project",
+  "version": 2,
+  "ideaTitle": "Dense sixteenth-note check",
+  "instrument": "piano",
+  "range": "C3-C5",
+  "timeSignature": "4/4",
+  "tempo": 100,
+  "volume": 70,
+  "timelineEndBeat": 4,
+  "notes": [
+    { "id": "d1", "onsetId": "o1", "note": "C4", "midi": 60, "startBeat": 0, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d2", "onsetId": "o2", "note": "D4", "midi": 62, "startBeat": 0.25, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d3", "onsetId": "o3", "note": "E4", "midi": 64, "startBeat": 0.5, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d4", "onsetId": "o4", "note": "F4", "midi": 65, "startBeat": 0.75, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d5", "onsetId": "o5", "note": "G4", "midi": 67, "startBeat": 1, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d6", "onsetId": "o6", "note": "A4", "midi": 69, "startBeat": 1.25, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d7", "onsetId": "o7", "note": "B4", "midi": 71, "startBeat": 1.5, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d8", "onsetId": "o8", "note": "C5", "midi": 72, "startBeat": 1.75, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d9", "onsetId": "o9", "note": "C5", "midi": 72, "startBeat": 2, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d10", "onsetId": "o10", "note": "B4", "midi": 71, "startBeat": 2.25, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d11", "onsetId": "o11", "note": "A4", "midi": 69, "startBeat": 2.5, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d12", "onsetId": "o12", "note": "G4", "midi": 67, "startBeat": 2.75, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d13", "onsetId": "o13", "note": "F4", "midi": 65, "startBeat": 3, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d14", "onsetId": "o14", "note": "E4", "midi": 64, "startBeat": 3.25, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d15", "onsetId": "o15", "note": "D4", "midi": 62, "startBeat": 3.5, "durationBeats": 0.25, "sourceType": "import" },
+    { "id": "d16", "onsetId": "o16", "note": "C4", "midi": 60, "startBeat": 3.75, "durationBeats": 0.25, "sourceType": "import" }
+  ]
+}

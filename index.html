@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Catch the melody before it disappears." />
     <meta name="twitter:image" content="/assets/og.png" />
     <title>Melody Catcher — Online Piano</title>
-    <link rel="stylesheet" href="styles.css?v=20260902-3" />
+    <link rel="stylesheet" href="styles.css?v=20260902-4" />
   </head>
   <body>
     <a class="skip-link" href="#piano">Skip to piano</a>
@@ -68,7 +68,10 @@
             <div class="score-actions">
               <button class="text-button" id="undo" type="button" disabled>Undo</button>
               <button class="text-button" id="redo" type="button" disabled>Redo</button>
+              <button class="text-button" id="import-open" type="button" aria-describedby="import-help">Import</button>
               <button class="text-button" id="export-open" type="button" disabled>Export</button>
+              <input id="import-file" type="file" accept=".musicxml,.xml,.json,application/xml,text/xml,application/json" hidden />
+              <span class="sr-only" id="import-help">Import a MusicXML score or Melody Catcher project file.</span>
             </div>
           </div>
           <div class="score-viewport" id="score-viewport">
@@ -102,9 +105,14 @@
               <label class="select-control range-control">
                 <span>Range</span>
                 <select id="range-select" aria-describedby="range-help">
+                  <option value="C1-C3">C1 – C3</option>
+                  <option value="C2-C4">C2 – C4</option>
                   <option value="C3-C5">C3 – C5</option>
+                  <option value="C4-C6">C4 – C6</option>
+                  <option value="C5-C7">C5 – C7</option>
+                  <option value="C6-C8">C6 – C8</option>
                 </select>
-                <span class="sr-only" id="range-help">This MVP uses the requested 15 white key range.</span>
+                <span class="sr-only" id="range-help">Each range contains 15 white keys and 10 black keys.</span>
               </label>
               <label class="select-control meter-control">
                 <span>Time signature</span>
@@ -210,15 +218,14 @@
         </div>
         <div class="modal-body export-body">
           <p id="export-summary">Your melody is ready to export.</p>
-          <label class="field" for="export-preview">
-            <span>Note list</span>
-            <textarea id="export-preview" rows="5" readonly></textarea>
-          </label>
+          <div class="export-sheet-preview" id="export-preview" aria-label="Print preview"></div>
           <div class="export-actions">
-            <button class="button button-primary" id="download-notes" type="button">Download notes</button>
-            <button class="button button-quiet" id="copy-notes" type="button">Copy note list</button>
+            <button class="button button-primary" id="print-score" type="button">Print / Save PDF</button>
+            <button class="button button-quiet" id="download-svg" type="button">Download SVG</button>
+            <button class="button button-quiet" id="download-project" type="button">Download editable project</button>
           </div>
-          <p class="export-state" id="export-state" role="status" aria-live="polite">Choose a format above.</p>
+          <p class="export-note">PDF and SVG use the same engraved staff shown here. The project file can be imported later for editing.</p>
+          <p class="export-state" id="export-state" role="status" aria-live="polite">Choose a printable format above.</p>
         </div>
       </div>
     </dialog>
@@ -237,7 +244,7 @@
           <p><strong>2. Read rhythm.</strong> Filled, open, flagged, and dotted heads show sixteenth, eighth, quarter, half, dotted, and whole values. Beams group fast notes by the meter, each new score row repeats its clefs and time signature, and silence is written with solid black rests of the correct length.</p>
           <p><strong>3. Read pitch.</strong> The score uses C major, so it has no key-signature symbols. Sharps or flats mark black keys, remain active for that pitch through the measure, and a natural cancels them. Ledger lines show notes beyond a staff.</p>
           <p><strong>4. Hold and chord.</strong> Notes pressed within 10 ms share a chord stem on the same staff. A held note keeps its own full value while later attacks use a separate voice; a curved tie appears only when the duration crosses a barline or needs more than one legal note value.</p>
-          <p><strong>5. Keep.</strong> Tempo uses the selected time signature’s beat unit. Your idea saves on this device, and Export creates a readable note-and-rhythm list.</p>
+          <p><strong>5. Import and export.</strong> Import reads MusicXML or a Melody Catcher project. Export prints the same engraved score, saves it as a scalable SVG, or downloads an editable project backup.</p>
           <p class="help-tip"><kbd>Space</kbd> pauses or resumes recording without muting the piano.</p>
         </div>
       </div>
@@ -246,6 +253,6 @@
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
     <script src="assets/vexflow.js" defer></script>
     <script src="rhythm.js?v=20260902-4" defer></script>
-    <script src="script.js?v=20260902-4" defer></script>
+    <script src="script.js?v=20260902-5" defer></script>
   </body>
 </html>
