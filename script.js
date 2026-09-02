@@ -930,9 +930,10 @@
     }
   }
 
-  function globalRestSegments(groups, totalBeats) {
+  function staffRestSegments(groups, totalBeats, staff) {
     const intervals = groups
       .flatMap((group) => group.notes)
+      .filter((note) => !staff || noteStaff(note) === staff)
       .map((note) => ({ start: note.startBeat, end: note.startBeat + (note.durationBeats || RHYTHM_QUANTUM) }))
       .sort((a, b) => a.start - b.start);
     const merged = [];
@@ -951,6 +952,10 @@
     return gaps.flatMap((gap) => splitRestDuration(gap.start, gap.duration));
   }
 
+  function globalRestSegments(groups, totalBeats) {
+    return staffRestSegments(groups, totalBeats, null);
+  }
+
   function restStaffAt(startBeat, groups) {
     const notes = groups.flatMap((group) => group.notes);
     const previous = [...notes]
@@ -964,6 +969,8 @@
 
   function splitRestDuration(startBeat, durationBeats) {
     const capacity = measureCapacity();
+    const { numerator, denominator } = timeSignatureParts();
+    const compoundBeat = denominator === 8 && numerator >= 6 && numerator % 3 === 0 ? 1.5 : null;
     const segments = [];
     let cursor = startBeat;
     let remaining = Math.max(0, quantizeBeat(durationBeats));
@@ -980,7 +987,17 @@
       }
       const toBarline = positionInMeasure < 0.001 ? capacity : capacity - positionInMeasure;
       const available = Math.min(remaining, toBarline);
-      const spec = NOTE_VALUES.find((value) => value.beats <= available + 0.001) || NOTE_VALUES.at(-1);
+      const spec = NOTE_VALUES.find((value) => {
+        if (value.beats > available + 0.001) return false;
+        if (value.dotted) {
+          return Boolean(
+            compoundBeat
+            && Math.abs(value.beats - compoundBeat) < 0.001
+            && Math.abs(positionInMeasure / compoundBeat - Math.round(positionInMeasure / compoundBeat)) < 0.001
+          );
+        }
+        return Math.abs(positionInMeasure / value.beats - Math.round(positionInMeasure / value.beats)) < 0.001;
+      }) || NOTE_VALUES.at(-1);
       segments.push({ startBeat: cursor, spec });
       cursor = quantizeBeat(cursor + spec.beats);
       remaining = quantizeBeat(remaining - spec.beats);
@@ -1304,7 +1321,7 @@
     return result;
   }
 
-  function measureRestTrackSegments(restSegments, measureStart, measureEnd, staff, groups) {
+  function measureRestTrackSegments(restSegments, measureStart, measureEnd, staff) {
     const result = [];
     let cursor = measureStart;
     const addHiddenTime = (startBeat, durationBeats) => {
@@ -1331,10 +1348,7 @@
           id: `confirmed-rest-${staff}-${segment.startBeat}`,
           notes: [],
           isRest: true,
-          // A completely silent measure needs one centered whole-measure rest
-          // on each stave of a piano grand staff. Shorter rests stay only in
-          // the active stave so two voices never print duplicate symbols.
-          hiddenRest: !segment.spec.fullMeasure && restStaffAt(segment.startBeat, groups) !== staff
+          hiddenRest: false
         });
         cursor = Math.max(cursor, segment.startBeat + segment.spec.beats);
       });
@@ -1491,7 +1505,10 @@
     const { numerator, denominator } = timeSignatureParts();
     const groups = onsetGroups();
     const confirmedRestEnd = Math.min(totalBeats, state.timelineEndBeat || 0);
-    const confirmedRests = globalRestSegments(groups, confirmedRestEnd);
+    const confirmedRests = {
+      treble: staffRestSegments(groups, confirmedRestEnd, "treble"),
+      bass: staffRestSegments(groups, confirmedRestEnd, "bass")
+    };
     const beamOptions = {
       groups: VF.Beam.getDefaultBeamGroups(state.timeSignature),
       beam_rests: false,
@@ -1579,11 +1596,10 @@
           });
 
           const restEntries = measureRestTrackSegments(
-            confirmedRests,
+            confirmedRests[staff],
             measureStart,
             measureEnd,
-            staff,
-            groups
+            staff
           ).map((segment) => createEngravedEntry(VF, segment, staff, new Map()));
           if (restEntries.some((entry) => !entry.hiddenRest)) {
             const notes = restEntries.map((entry) => entry.vexNote);

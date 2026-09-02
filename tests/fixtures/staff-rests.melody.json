@@ -1,0 +1,22 @@
+{
+  "format": "melody-catcher-project",
+  "version": 2,
+  "ideaTitle": "Staff rest check",
+  "instrument": "piano",
+  "range": "C3-C5",
+  "timeSignature": "4/4",
+  "tempo": 100,
+  "volume": 70,
+  "timelineEndBeat": 8,
+  "notes": [
+    {
+      "id": "only-note",
+      "onsetId": "only-onset",
+      "note": "C4",
+      "midi": 60,
+      "startBeat": 0,
+      "durationBeats": 0.25,
+      "sourceType": "import"
+    }
+  ]
+}
