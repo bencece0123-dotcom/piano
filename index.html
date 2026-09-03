@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Catch the melody before it disappears." />
     <meta name="twitter:image" content="/assets/og.png" />
     <title>Melody Catcher — Online Piano</title>
-    <link rel="stylesheet" href="styles.css?v=20260902-5" />
+    <link rel="stylesheet" href="styles.css?v=20260903-1" />
   </head>
   <body>
     <a class="skip-link" href="#piano">Skip to piano</a>
@@ -149,12 +149,26 @@
               <label class="tempo-control" for="tempo">
                 <span>Tempo <output id="tempo-output">100 BPM</output></span>
                 <input id="tempo" type="range" min="40" max="200" step="1" value="100" aria-describedby="tempo-help" />
-                <span class="sr-only" id="tempo-help">Sets the quarter-note beats per minute used to write and play the rhythm.</span>
+                <span class="sr-only" id="tempo-help">Sets the beat-unit rate used to write, display, and play the rhythm.</span>
               </label>
               <label class="volume-control" for="volume">
                 <span>Volume <output id="volume-output">70%</output></span>
                 <input id="volume" type="range" min="0" max="100" value="70" />
               </label>
+            </div>
+          </div>
+
+          <div class="visual-metronome" id="visual-metronome">
+            <button class="metronome-toggle" id="metronome-toggle" type="button" aria-pressed="false" aria-label="Start visual metronome">
+              <span class="metronome-icon" aria-hidden="true"></span>
+              <span class="metronome-toggle-copy">
+                <strong>Visual metronome</strong>
+                <small id="metronome-toggle-label">Start</small>
+              </span>
+            </button>
+            <div class="metronome-readout">
+              <div class="metronome-beats" id="metronome-beats" aria-hidden="true"></div>
+              <span class="metronome-count" id="metronome-count">Ready · 4 beats</span>
             </div>
           </div>
 
@@ -332,6 +346,6 @@
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
     <script src="assets/vexflow.js" defer></script>
     <script src="rhythm.js?v=20260902-4" defer></script>
-    <script src="script.js?v=20260903-1" defer></script>
+    <script src="script.js?v=20260903-2" defer></script>
   </body>
 </html>

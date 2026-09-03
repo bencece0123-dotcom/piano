@@ -115,6 +115,10 @@
     tempo: document.querySelector("#tempo"),
     tempoOutput: document.querySelector("#tempo-output"),
     timeSignature: document.querySelector("#time-signature-select"),
+    metronomeToggle: document.querySelector("#metronome-toggle"),
+    metronomeToggleLabel: document.querySelector("#metronome-toggle-label"),
+    metronomeBeats: document.querySelector("#metronome-beats"),
+    metronomeCount: document.querySelector("#metronome-count"),
     range: document.querySelector("#range-select"),
     piano: document.querySelector("#piano-keys"),
     pianoWrap: document.querySelector("#piano"),
@@ -178,6 +182,10 @@
   let currentOnsetWindow = null;
   let recordingClock = null;
   let lastOnsetBeat = null;
+  let metronomeEnabled = false;
+  let metronomeTimer = null;
+  let metronomeBeatIndex = 0;
+  let metronomeNextTickAt = 0;
   let scoreRenderFrame = null;
   let scoreShouldFollow = false;
 
@@ -402,6 +410,72 @@
 
   function beatUnitName() {
     return { 2: "half note", 4: "quarter note", 8: "eighth note" }[timeSignatureParts().denominator] || `${timeSignatureParts().denominator}th note`;
+  }
+
+  function clearMetronomeTimer() {
+    if (metronomeTimer !== null) window.clearTimeout(metronomeTimer);
+    metronomeTimer = null;
+  }
+
+  function renderMetronomeBeats() {
+    const { numerator } = timeSignatureParts();
+    el.metronomeBeats.replaceChildren();
+    for (let index = 0; index < numerator; index += 1) {
+      const beat = document.createElement("span");
+      beat.className = `metronome-beat${index === 0 ? " is-downbeat" : ""}`;
+      el.metronomeBeats.append(beat);
+    }
+    el.metronomeCount.textContent = `Ready · ${numerator} ${numerator === 1 ? "beat" : "beats"}`;
+  }
+
+  function paintMetronomeBeat(index) {
+    const beats = [...el.metronomeBeats.children];
+    beats.forEach((beat, beatIndex) => beat.classList.toggle("is-current", beatIndex === index));
+    const { numerator } = timeSignatureParts();
+    el.metronomeCount.textContent = `Beat ${index + 1} of ${numerator} · ${beatUnitName()}`;
+  }
+
+  function scheduleMetronomeTick() {
+    if (!metronomeEnabled || document.hidden) return;
+    const delay = Math.max(0, metronomeNextTickAt - performance.now());
+    metronomeTimer = window.setTimeout(() => {
+      if (!metronomeEnabled || document.hidden) return;
+      const { numerator } = timeSignatureParts();
+      paintMetronomeBeat(metronomeBeatIndex);
+      metronomeBeatIndex = (metronomeBeatIndex + 1) % numerator;
+      metronomeNextTickAt += beatDurationMs();
+      const now = performance.now();
+      if (metronomeNextTickAt <= now) {
+        const skipped = Math.floor((now - metronomeNextTickAt) / beatDurationMs()) + 1;
+        metronomeBeatIndex = (metronomeBeatIndex + skipped) % numerator;
+        metronomeNextTickAt += skipped * beatDurationMs();
+      }
+      scheduleMetronomeTick();
+    }, delay);
+  }
+
+  function restartMetronomeClock() {
+    clearMetronomeTimer();
+    if (!metronomeEnabled || document.hidden) return;
+    metronomeBeatIndex = 0;
+    metronomeNextTickAt = performance.now();
+    scheduleMetronomeTick();
+  }
+
+  function setMetronomeEnabled(enabled, announce = true) {
+    metronomeEnabled = enabled;
+    el.metronomeToggle.classList.toggle("is-on", enabled);
+    el.metronomeToggle.setAttribute("aria-pressed", String(enabled));
+    el.metronomeToggle.setAttribute("aria-label", `${enabled ? "Stop" : "Start"} visual metronome`);
+    el.metronomeToggleLabel.textContent = enabled ? "Stop" : "Start";
+    if (enabled) {
+      restartMetronomeClock();
+      if (announce) showToast(`Visual metronome started at ${state.tempo} BPM.`);
+    } else {
+      clearMetronomeTimer();
+      renderMetronomeBeats();
+      if (announce) showToast("Visual metronome stopped.");
+    }
   }
 
   function quarterUnitsFromMs(milliseconds) {
@@ -3018,10 +3092,16 @@
       if (state.notes.length) scheduleScoreRender();
     });
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) stopAllNotes();
+      if (document.hidden) {
+        stopAllNotes();
+        clearMetronomeTimer();
+      } else if (metronomeEnabled) {
+        restartMetronomeClock();
+      }
     });
     el.recordToggle.addEventListener("click", toggleRecording);
     el.playScore.addEventListener("click", playComposition);
+    el.metronomeToggle.addEventListener("click", () => setMetronomeEnabled(!metronomeEnabled));
     el.undo.addEventListener("click", undo);
     el.redo.addEventListener("click", redo);
     el.deleteNote.addEventListener("click", deleteSelectedItems);
@@ -3076,6 +3156,7 @@
       stopAllNotes();
       state.tempo = Number(el.tempo.value);
       el.tempoOutput.value = `${state.tempo} BPM`;
+      if (metronomeEnabled) restartMetronomeClock();
       saveAll();
       renderScore();
     });
@@ -3083,6 +3164,8 @@
       stopAllNotes();
       state.timeSignature = TIME_SIGNATURES.includes(el.timeSignature.value) ? el.timeSignature.value : "4/4";
       resetRecordingClock();
+      renderMetronomeBeats();
+      if (metronomeEnabled) restartMetronomeClock();
       saveAll();
       renderScore();
       showToast(`${state.timeSignature} time selected. Measures and rests were recalculated.`);
@@ -3153,6 +3236,7 @@
     el.tempoOutput.value = `${state.tempo} BPM`;
     el.timeSignature.value = state.timeSignature;
     el.range.value = state.range;
+    renderMetronomeBeats();
     renderScore();
     requestAnimationFrame(() => {
       el.pianoWrap.scrollLeft = Math.max(0, (el.pianoWrap.scrollWidth - el.pianoWrap.clientWidth) / 2);
