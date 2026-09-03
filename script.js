@@ -2600,7 +2600,7 @@
     const escapeXml = (value) => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
     const title = escapeXml(state.ideaTitle);
     const meta = escapeXml(el.scoreMeta.textContent);
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${title}"><rect width="100%" height="100%" fill="#fff"/><text x="10" y="30" fill="#111412" font-family="Georgia, Times New Roman, serif" font-size="24">${title}</text><text x="10" y="51" fill="#5d635f" font-family="Arial, sans-serif" font-size="11">${meta}</text>${systems}</svg>`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" fill="#111412" stroke="#111412" role="img" aria-label="${title}"><rect width="100%" height="100%" fill="#fff" stroke="none"/><text x="10" y="30" fill="#111412" stroke="none" font-family="Georgia, Times New Roman, serif" font-size="24">${title}</text><text x="10" y="51" fill="#5d635f" stroke="none" font-family="Arial, sans-serif" font-size="11">${meta}</text>${systems}</svg>`;
   }
 
   function downloadBlob(blob, fileName) {
