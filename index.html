@@ -17,7 +17,7 @@
     <meta name="twitter:description" content="Catch the melody before it disappears." />
     <meta name="twitter:image" content="/assets/og.png" />
     <title>Melody Catcher — Online Piano</title>
-    <link rel="stylesheet" href="styles.css?v=20260902-4" />
+    <link rel="stylesheet" href="styles.css?v=20260902-5" />
   </head>
   <body>
     <a class="skip-link" href="#piano">Skip to piano</a>
@@ -38,6 +38,10 @@
             <span class="status-dot" aria-hidden="true"></span>
             <span>Loading piano…</span>
           </div>
+          <button class="account-button" id="account-open" type="button">
+            <span class="account-avatar" aria-hidden="true">♩</span>
+            <span id="account-label">Account</span>
+          </button>
           <button class="icon-button" id="help-button" type="button" aria-label="Show keyboard help">?</button>
         </div>
       </header>
@@ -70,7 +74,7 @@
               <button class="text-button" id="redo" type="button" disabled>Redo</button>
               <button class="text-button" id="import-open" type="button" aria-describedby="import-help">Import</button>
               <button class="text-button" id="export-open" type="button" disabled>Export</button>
-              <input id="import-file" type="file" accept=".musicxml,.xml,.json,application/xml,text/xml,application/json" hidden />
+              <input id="import-file" type="file" accept=".musicxml,.xml,.json,application/xml,text/xml,application/json" aria-label="Choose a score to import" hidden />
               <span class="sr-only" id="import-help">Import a MusicXML score or Melody Catcher project file.</span>
             </div>
           </div>
@@ -82,8 +86,15 @@
             <div class="staff" id="staff" aria-label="Recorded notes" tabindex="0"></div>
           </div>
           <div class="selection-bar" id="selection-bar" hidden>
-            <span id="selection-label">C4 selected</span>
-            <button class="button button-danger" id="delete-note" type="button">Delete note</button>
+            <span id="selection-label">Nothing selected</span>
+            <div class="selection-actions">
+              <button class="text-button" id="clear-selection" type="button">Clear selection</button>
+              <button class="button button-danger" id="delete-note" type="button">Delete selected</button>
+            </div>
+          </div>
+          <div class="score-footer">
+            <p>Select any number of notes, or rests between notes, then delete them together.</p>
+            <button class="text-button clear-idea-button" id="clear-score" type="button" disabled>Clear idea</button>
           </div>
         </section>
 
@@ -110,7 +121,6 @@
                   <option value="C3-C5">C3 – C5</option>
                   <option value="C4-C6">C4 – C6</option>
                   <option value="C5-C7">C5 – C7</option>
-                  <option value="C6-C8">C6 – C8</option>
                 </select>
                 <span class="sr-only" id="range-help">Each range contains 15 white keys and 10 black keys.</span>
               </label>
@@ -153,7 +163,6 @@
           </div>
           <div class="piano-footer">
             <p><kbd>Space</kbd> pauses recording · Press the letters shown on the keys</p>
-            <button class="text-button" id="clear-score" type="button" disabled>Clear idea</button>
           </div>
         </section>
       </main>
@@ -185,6 +194,34 @@
               </label>
             </div>
           </section>
+          <section class="settings-section" aria-labelledby="personalization-title">
+            <div class="settings-section-heading">
+              <div>
+                <h3 id="personalization-title">Personalization</h3>
+                <p id="personalization-help">Create or log in to a device account to unlock wallpapers and decorations.</p>
+              </div>
+              <button class="text-button" id="settings-sign-in" type="button">Open account</button>
+            </div>
+            <div class="personalization-controls" id="personalization-controls" hidden>
+              <label class="field">
+                <span>Wallpaper</span>
+                <select id="wallpaper-select">
+                  <option value="paper">Warm paper</option>
+                  <option value="sage">Soft sage</option>
+                  <option value="sky">Quiet sky</option>
+                  <option value="rose">Rose studio</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Decoration</span>
+                <select id="decoration-select">
+                  <option value="none">None</option>
+                  <option value="notes">Floating notes</option>
+                  <option value="stars">Small stars</option>
+                </select>
+              </label>
+            </div>
+          </section>
           <section class="settings-section controls-section" aria-labelledby="controls-title">
             <div class="settings-section-heading">
               <div>
@@ -205,6 +242,47 @@
           </div>
         </div>
       </form>
+    </dialog>
+
+    <dialog class="modal compact-modal" id="account-dialog" aria-labelledby="account-title">
+      <div class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="section-label">Optional device account</p>
+            <h2 id="account-title">Your piano space</h2>
+          </div>
+          <button class="icon-button" id="account-close" type="button" aria-label="Close account">×</button>
+        </div>
+        <div class="modal-body account-body">
+          <div id="account-guest-view">
+            <p class="account-note">Create an account for this browser to save your wallpaper and decorations. Piano recording works without logging in.</p>
+            <form id="account-form" novalidate>
+              <label class="field">
+                <span>Account name</span>
+                <input id="account-name" type="text" minlength="3" maxlength="24" autocomplete="username" placeholder="piano-player" required />
+              </label>
+              <label class="field">
+                <span>Passcode</span>
+                <input id="account-passcode" type="password" minlength="4" maxlength="64" autocomplete="current-password" placeholder="At least 4 characters" required />
+              </label>
+              <div class="form-error" id="account-error" role="alert" hidden></div>
+              <div class="account-actions">
+                <button class="button button-primary" type="submit">Log in</button>
+                <button class="button button-quiet" id="account-create" type="button">Create account</button>
+              </div>
+            </form>
+          </div>
+          <div class="account-member" id="account-member-view" hidden>
+            <span class="account-member-avatar" aria-hidden="true">♪</span>
+            <div>
+              <p>Logged in on this device as</p>
+              <strong id="account-member-name">Piano player</strong>
+            </div>
+            <button class="button button-quiet" id="account-logout" type="button">Log out</button>
+          </div>
+          <p class="privacy-note">Device accounts stay in this browser and do not sync to other devices.</p>
+        </div>
+      </div>
     </dialog>
 
     <dialog class="modal compact-modal" id="export-dialog" aria-labelledby="export-title">
@@ -244,7 +322,8 @@
           <p><strong>2. Read rhythm.</strong> Filled, open, flagged, and dotted heads show sixteenth, eighth, quarter, half, dotted, and whole values. Beams group fast notes by the meter, each new score row repeats its clefs and time signature, and silence is written with solid black rests of the correct length.</p>
           <p><strong>3. Read pitch.</strong> The score uses C major, so it has no key-signature symbols. Sharps or flats mark black keys, remain active for that pitch through the measure, and a natural cancels them. Ledger lines show notes beyond a staff.</p>
           <p><strong>4. Hold and chord.</strong> Notes pressed within 10 ms share a chord stem on the same staff. A held note keeps its own full value while later attacks use a separate voice; a curved tie appears only when the duration crosses a barline or needs more than one legal note value.</p>
-          <p><strong>5. Import and export.</strong> Import reads MusicXML or a Melody Catcher project. Export prints the same engraved score, saves it as a scalable SVG, or downloads an editable project backup.</p>
+          <p><strong>5. Edit.</strong> Select several notes by clicking each one. Select rests that represent silence between notes, then use Delete selected to remove everything together.</p>
+          <p><strong>6. Import and export.</strong> Import reads MusicXML or a Melody Catcher project. Export prints the same engraved score, saves it as a scalable SVG, or downloads an editable project backup.</p>
           <p class="help-tip"><kbd>Space</kbd> pauses or resumes recording without muting the piano.</p>
         </div>
       </div>
@@ -253,6 +332,6 @@
     <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
     <script src="assets/vexflow.js" defer></script>
     <script src="rhythm.js?v=20260902-4" defer></script>
-    <script src="script.js?v=20260902-6" defer></script>
+    <script src="script.js?v=20260902-7" defer></script>
   </body>
 </html>

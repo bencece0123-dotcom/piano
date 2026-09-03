@@ -2,6 +2,8 @@
   "use strict";
 
   const STORAGE_KEY = "melody-catcher-aic-2026-0017-v1";
+  const ACCOUNTS_KEY = "melody-catcher-device-accounts-v1";
+  const ACTIVE_ACCOUNT_KEY = "melody-catcher-active-account-v1";
   const CHORD_WINDOW_MS = 10;
   const BEAT_SPACING = 88;
   const SCORE_START_X = 108;
@@ -26,7 +28,9 @@
   ];
   const FLAT_SPELLINGS = { "C#": "Db", "D#": "Eb", "F#": "Gb", "G#": "Ab", "A#": "Bb" };
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  const RANGE_OPTIONS = ["C1-C3", "C2-C4", "C3-C5", "C4-C6", "C5-C7", "C6-C8"];
+  const RANGE_OPTIONS = ["C1-C3", "C2-C4", "C3-C5", "C4-C6", "C5-C7"];
+  const WALLPAPER_OPTIONS = ["paper", "sage", "sky", "rose"];
+  const DECORATION_OPTIONS = ["none", "notes", "stars"];
   const DEFAULT_BINDINGS = [
     "a", "w", "s", "e", "d", "f", "t", "g", "y", "h", "u", "j", "k",
     "o", "l", "p", ";", "'", "z", "x", "c", "v", "b", "n", "m"
@@ -69,7 +73,7 @@
     notes: [],
     undoStack: [],
     redoStack: [],
-    selectedId: null,
+    selectedKeys: new Set(),
     recording: true,
     playing: false,
     instrument: "piano",
@@ -79,6 +83,9 @@
     range: "C3-C5",
     profileName: "",
     ideaTitle: "Untitled idea",
+    activeAccount: null,
+    wallpaper: "paper",
+    decoration: "none",
     timelineEndBeat: 0,
     bindings: { ...defaultBindingMap }
   };
@@ -100,6 +107,7 @@
     selectionBar: document.querySelector("#selection-bar"),
     selectionLabel: document.querySelector("#selection-label"),
     deleteNote: document.querySelector("#delete-note"),
+    clearSelection: document.querySelector("#clear-selection"),
     instrumentTitle: document.querySelector("#piano-title"),
     instrumentSelect: document.querySelector("#instrument-select"),
     volume: document.querySelector("#volume"),
@@ -122,6 +130,24 @@
     bindingsGrid: document.querySelector("#bindings-grid"),
     bindingsError: document.querySelector("#bindings-error"),
     resetBindings: document.querySelector("#reset-bindings"),
+    personalizationHelp: document.querySelector("#personalization-help"),
+    personalizationControls: document.querySelector("#personalization-controls"),
+    settingsSignIn: document.querySelector("#settings-sign-in"),
+    wallpaper: document.querySelector("#wallpaper-select"),
+    decoration: document.querySelector("#decoration-select"),
+    accountDialog: document.querySelector("#account-dialog"),
+    accountOpen: document.querySelector("#account-open"),
+    accountClose: document.querySelector("#account-close"),
+    accountLabel: document.querySelector("#account-label"),
+    accountGuestView: document.querySelector("#account-guest-view"),
+    accountMemberView: document.querySelector("#account-member-view"),
+    accountMemberName: document.querySelector("#account-member-name"),
+    accountForm: document.querySelector("#account-form"),
+    accountName: document.querySelector("#account-name"),
+    accountPasscode: document.querySelector("#account-passcode"),
+    accountError: document.querySelector("#account-error"),
+    accountCreate: document.querySelector("#account-create"),
+    accountLogout: document.querySelector("#account-logout"),
     exportDialog: document.querySelector("#export-dialog"),
     exportSummary: document.querySelector("#export-summary"),
     exportPreview: document.querySelector("#export-preview"),
@@ -174,6 +200,117 @@
 
   function normalizeBinding(value) {
     return value.length === 1 ? value.toLowerCase() : "";
+  }
+
+  function bindingFromPhysicalCode(code) {
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+    if (/^Digit\d$/.test(code)) return code.slice(5);
+    return {
+      Semicolon: ";",
+      Quote: "'",
+      Comma: ",",
+      Period: ".",
+      Slash: "/",
+      Backslash: "\\",
+      BracketLeft: "[",
+      BracketRight: "]",
+      Minus: "-",
+      Equal: "=",
+      Backquote: "`"
+    }[code] || "";
+  }
+
+  function noteSelectionKey(id) {
+    return `note:${id}`;
+  }
+
+  function restSelectionKey(startBeat, durationBeats) {
+    return `rest:${cleanBeat(startBeat)}:${cleanBeat(durationBeats)}`;
+  }
+
+  function normalizeAccountName(value) {
+    return value.trim().toLowerCase().replace(/\s+/g, "-");
+  }
+
+  function readDeviceAccounts() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(ACCOUNTS_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function writeDeviceAccounts(accounts) {
+    try {
+      localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+      return true;
+    } catch (error) {
+      showToast("This browser could not save the device account.", "error");
+      return false;
+    }
+  }
+
+  function randomSalt() {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function hashPasscode(passcode, salt) {
+    const bytes = new TextEncoder().encode(`${salt}:${passcode}`);
+    const digest = await crypto.subtle.digest("SHA-256", bytes);
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  function applyPersonalization() {
+    document.body.dataset.wallpaper = WALLPAPER_OPTIONS.includes(state.wallpaper) ? state.wallpaper : "paper";
+    document.body.dataset.decoration = DECORATION_OPTIONS.includes(state.decoration) ? state.decoration : "none";
+  }
+
+  function activeAccountRecord() {
+    return state.activeAccount ? readDeviceAccounts()[state.activeAccount] || null : null;
+  }
+
+  function renderAccountState() {
+    const account = activeAccountRecord();
+    const loggedIn = Boolean(account);
+    el.accountLabel.textContent = loggedIn ? account.displayName : "Account";
+    el.accountGuestView.hidden = loggedIn;
+    el.accountMemberView.hidden = !loggedIn;
+    el.accountMemberName.textContent = account?.displayName || "Piano player";
+    el.personalizationControls.hidden = !loggedIn;
+    el.settingsSignIn.hidden = loggedIn;
+    el.personalizationHelp.textContent = loggedIn
+      ? `Personal touches are saved for ${account.displayName} on this device.`
+      : "Create or log in to a device account to unlock wallpapers and decorations.";
+    el.wallpaper.value = state.wallpaper;
+    el.decoration.value = state.decoration;
+  }
+
+  function loadActiveAccount() {
+    let key = null;
+    try {
+      key = localStorage.getItem(ACTIVE_ACCOUNT_KEY);
+    } catch (error) {
+      key = null;
+    }
+    const account = key ? readDeviceAccounts()[key] : null;
+    if (!account) return;
+    state.activeAccount = key;
+    state.wallpaper = WALLPAPER_OPTIONS.includes(account.wallpaper) ? account.wallpaper : "paper";
+    state.decoration = DECORATION_OPTIONS.includes(account.decoration) ? account.decoration : "none";
+  }
+
+  function saveAccountPreferences() {
+    if (!state.activeAccount) return;
+    const accounts = readDeviceAccounts();
+    const account = accounts[state.activeAccount];
+    if (!account) return;
+    account.wallpaper = state.wallpaper;
+    account.decoration = state.decoration;
+    account.displayName = state.profileName || account.displayName;
+    if (writeDeviceAccounts(accounts)) renderAccountState();
   }
 
   function rangeLabel(rangeKey = state.range) {
@@ -1224,6 +1361,26 @@
       });
     });
 
+    // Fast keyboard playing often has a tiny physical key overlap even when
+    // the player intended one continuous melodic run. Trim only those very
+    // small recorded overlaps for engraving so neighbouring short notes can
+    // stay in one voice and share the expected beam. Longer held notes remain
+    // separate voices and keep their independent stems and ties.
+    Object.values(eventsByStaff).forEach((events) => {
+      const ordered = events.sort((first, second) => first.startBeat - second.startBeat || first.endBeat - second.endBeat);
+      for (let index = 0; index < ordered.length - 1; index += 1) {
+        const current = ordered[index];
+        const next = ordered[index + 1];
+        if (current.tuplet || next.startBeat <= current.startBeat + 0.001) continue;
+        if (current.notes.some((note) => note.sourceType === "import")) continue;
+        const overlap = current.endBeat - next.startBeat;
+        const onsetDistance = next.startBeat - current.startBeat;
+        if (overlap <= 0.001 || overlap > RHYTHM_QUANTUM * 2 + 0.001) continue;
+        current.durationBeats = Math.max(RHYTHM_QUANTUM, cleanBeat(onsetDistance));
+        current.endBeat = cleanBeat(current.startBeat + current.durationBeats);
+      }
+    });
+
     const lanesByStaff = { treble: [], bass: [] };
     ["treble", "bass"].forEach((staff) => {
       eventsByStaff[staff]
@@ -1478,19 +1635,36 @@
 
   function addScoreHitTargets(system, entries) {
     entries.forEach((entry) => {
-      if (entry.isRest) return;
       const noteX = entry.vexNote.getAbsoluteX();
       const noteYs = entry.vexNote.getYs();
-      entry.notes.forEach((recordedNote, noteIndex) => {
-        if (Math.abs(recordedNote.startBeat - entry.segment.startBeat) > 0.001) return;
+      if (entry.isRest) {
+        if (entry.hiddenRest || !entry.segment.selectableRest) return;
+        const key = restSelectionKey(entry.segment.startBeat, entry.segment.spec.beats);
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `score-hit-target${state.selectedId === recordedNote.id ? " is-selected" : ""}`;
+        button.className = `score-hit-target rest-hit-target${state.selectedKeys.has(key) ? " is-selected" : ""}`;
+        button.dataset.selectionKey = key;
+        button.dataset.kind = "rest";
+        button.style.left = `${noteX - 15}px`;
+        button.style.top = `${(noteYs[0] || (entry.staff === "treble" ? 82 : 224)) - 16}px`;
+        button.setAttribute("aria-label", `${entry.segment.spec.name} rest. Select to delete this silence.`);
+        button.setAttribute("aria-pressed", state.selectedKeys.has(key) ? "true" : "false");
+        system.append(button);
+        return;
+      }
+      entry.notes.forEach((recordedNote, noteIndex) => {
+        if (Math.abs(recordedNote.startBeat - entry.segment.startBeat) > 0.001) return;
+        const key = noteSelectionKey(recordedNote.id);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `score-hit-target${state.selectedKeys.has(key) ? " is-selected" : ""}`;
         button.dataset.id = recordedNote.id;
+        button.dataset.selectionKey = key;
+        button.dataset.kind = "note";
         button.style.left = `${noteX - 12}px`;
         button.style.top = `${noteYs[noteIndex] - 12}px`;
         button.setAttribute("aria-label", `${spokenNote(recordedNote.spelling || recordedNote.note)}, ${entry.segment.spec.name}. Select to edit.`);
-        button.setAttribute("aria-pressed", state.selectedId === recordedNote.id ? "true" : "false");
+        button.setAttribute("aria-pressed", state.selectedKeys.has(key) ? "true" : "false");
         system.append(button);
       });
     });
@@ -1509,6 +1683,7 @@
       treble: staffRestSegments(groups, confirmedRestEnd, "treble"),
       bass: staffRestSegments(groups, confirmedRestEnd, "bass")
     };
+    const selectableRests = globalRestSegments(groups, confirmedRestEnd);
     const beamOptions = {
       groups: VF.Beam.getDefaultBeamGroups(state.timeSignature),
       beam_rests: false,
@@ -1600,7 +1775,15 @@
             measureStart,
             measureEnd,
             staff
-          ).map((segment) => createEngravedEntry(VF, segment, staff, new Map()));
+          ).map((segment) => {
+            if (!segment.hiddenRest) {
+              segment.selectableRest = selectableRests.some((candidate) => (
+                Math.abs(candidate.startBeat - segment.startBeat) < 0.001
+                && Math.abs(candidate.spec.beats - segment.spec.beats) < 0.001
+              ));
+            }
+            return createEngravedEntry(VF, segment, staff, new Map());
+          });
           if (restEntries.some((entry) => !entry.hiddenRest)) {
             const notes = restEntries.map((entry) => entry.vexNote);
             const voice = new VF.Voice({ num_beats: numerator, beat_value: denominator })
@@ -1700,9 +1883,17 @@
         setAppStatus("Music sheet needs a reload", "error");
       }
     }
-    const selected = state.notes.find((note) => note.id === state.selectedId);
-    el.selectionBar.hidden = !selected;
-    if (selected) el.selectionLabel.textContent = `${displayNote(selected.spelling || selected.note)} · ${recordedDurationName(selected)} selected`;
+    const selectedNoteCount = [...state.selectedKeys].filter((key) => key.startsWith("note:")).length;
+    const selectedRestCount = [...state.selectedKeys].filter((key) => key.startsWith("rest:")).length;
+    const selectedCount = selectedNoteCount + selectedRestCount;
+    el.selectionBar.hidden = selectedCount === 0;
+    if (selectedCount) {
+      const parts = [];
+      if (selectedNoteCount) parts.push(`${selectedNoteCount} ${selectedNoteCount === 1 ? "note" : "notes"}`);
+      if (selectedRestCount) parts.push(`${selectedRestCount} ${selectedRestCount === 1 ? "rest" : "rests"}`);
+      el.selectionLabel.textContent = `${parts.join(" and ")} selected`;
+      el.deleteNote.textContent = `Delete ${selectedCount} selected`;
+    }
     el.undo.disabled = state.undoStack.length === 0;
     el.redo.disabled = state.redoStack.length === 0;
     el.playScore.disabled = !hasNotes;
@@ -1958,7 +2149,7 @@
     state.timelineEndBeat = Math.max(state.timelineEndBeat || 0, recorded?.startBeat || onset.startBeat);
     activeRecordIds.set(note, id);
     recordStartTimes.set(id, inputStartedAt);
-    state.selectedId = null;
+    state.selectedKeys.clear();
     saveAll();
     scheduleScoreRender(true);
   }
@@ -2083,7 +2274,7 @@
     state.redoStack.push(cloneNotes());
     state.notes = state.undoStack.pop();
     state.timelineEndBeat = latestOnsetBeat();
-    state.selectedId = null;
+    state.selectedKeys.clear();
     resetRecordingClock();
     saveAll();
     renderScore();
@@ -2096,24 +2287,71 @@
     state.undoStack.push(cloneNotes());
     state.notes = state.redoStack.pop();
     state.timelineEndBeat = latestOnsetBeat();
-    state.selectedId = null;
+    state.selectedKeys.clear();
     resetRecordingClock();
     saveAll();
     renderScore();
     showToast("Change restored.");
   }
 
-  function deleteSelectedNote() {
-    const index = state.notes.findIndex((note) => note.id === state.selectedId);
-    if (index < 0) return;
+  function deleteSelectedItems() {
+    const selectedNoteIds = new Set(
+      [...state.selectedKeys]
+        .filter((key) => key.startsWith("note:"))
+        .map((key) => key.slice(5))
+    );
+    const currentGlobalRests = globalRestSegments(onsetGroups(), state.timelineEndBeat || 0);
+    const selectedRests = [...state.selectedKeys]
+      .filter((key) => key.startsWith("rest:"))
+      .map((key) => {
+        const [, start, duration] = key.split(":");
+        return { startBeat: Number(start), durationBeats: Number(duration) };
+      })
+      .filter((selection) => currentGlobalRests.some((rest) => (
+        Math.abs(rest.startBeat - selection.startBeat) < 0.001
+        && Math.abs(rest.spec.beats - selection.durationBeats) < 0.001
+      )))
+      .sort((first, second) => first.startBeat - second.startBeat);
+    const deletedNotes = state.notes.filter((note) => selectedNoteIds.has(note.id));
+    if (!deletedNotes.length && !selectedRests.length) {
+      state.selectedKeys.clear();
+      renderScore();
+      return;
+    }
     pushHistory();
-    const [deleted] = state.notes.splice(index, 1);
-    state.timelineEndBeat = latestOnsetBeat();
-    state.selectedId = null;
+    const removedOnsets = new Set(deletedNotes.map((note) => note.onsetId));
+    state.notes = state.notes.filter((note) => !selectedNoteIds.has(note.id));
+    let removedBeats = 0;
+    selectedRests.forEach((rest) => {
+      const shiftedStart = cleanBeat(rest.startBeat - removedBeats);
+      const shiftedEnd = cleanBeat(shiftedStart + rest.durationBeats);
+      state.notes.forEach((note) => {
+        if (note.startBeat < shiftedEnd - 0.001) return;
+        note.startBeat = cleanBeat(Math.max(0, note.startBeat - rest.durationBeats));
+        if (Number.isFinite(note.rawStartBeat)) {
+          note.rawStartBeat = cleanBeat(Math.max(0, note.rawStartBeat - rest.durationBeats));
+        }
+      });
+      removedBeats = cleanBeat(removedBeats + rest.durationBeats);
+    });
+    state.notes.forEach((note) => {
+      if (note.joinToOnsetId && removedOnsets.has(note.joinToOnsetId)
+        && !state.notes.some((candidate) => candidate.onsetId === note.joinToOnsetId)) {
+        note.joinToOnsetId = null;
+      }
+    });
+    state.timelineEndBeat = Math.max(
+      latestOnsetBeat(),
+      cleanBeat(Math.max(0, (state.timelineEndBeat || 0) - removedBeats))
+    );
+    state.selectedKeys.clear();
     resetRecordingClock();
     saveAll();
     renderScore();
-    showToast(`${displayNote(deleted.spelling || deleted.note)} deleted. Undo is available.`);
+    const parts = [];
+    if (deletedNotes.length) parts.push(`${deletedNotes.length} ${deletedNotes.length === 1 ? "note" : "notes"}`);
+    if (selectedRests.length) parts.push(`${selectedRests.length} ${selectedRests.length === 1 ? "rest" : "rests"}`);
+    showToast(`${parts.join(" and ")} deleted. Undo is available.`);
   }
 
   function clearComposition() {
@@ -2135,7 +2373,7 @@
     pushHistory();
     state.notes = [];
     state.timelineEndBeat = 0;
-    state.selectedId = null;
+    state.selectedKeys.clear();
     resetRecordingClock();
     saveAll();
     renderScore();
@@ -2153,10 +2391,121 @@
     else dialog.removeAttribute("open");
   }
 
+  function showAccountError(message) {
+    el.accountError.textContent = message;
+    el.accountError.hidden = false;
+  }
+
+  function readAccountCredentials() {
+    const displayName = el.accountName.value.trim();
+    const key = normalizeAccountName(displayName);
+    const passcode = el.accountPasscode.value;
+    if (displayName.length < 3 || key.length < 3) {
+      showAccountError("Use at least 3 characters for your account name.");
+      return null;
+    }
+    if (passcode.length < 4) {
+      showAccountError("Use at least 4 characters for your passcode.");
+      return null;
+    }
+    return { displayName, key, passcode };
+  }
+
+  function finishAccountLogin(key, account, message) {
+    state.activeAccount = key;
+    state.wallpaper = WALLPAPER_OPTIONS.includes(account.wallpaper) ? account.wallpaper : "paper";
+    state.decoration = DECORATION_OPTIONS.includes(account.decoration) ? account.decoration : "none";
+    if (!state.profileName) state.profileName = account.displayName;
+    try {
+      localStorage.setItem(ACTIVE_ACCOUNT_KEY, key);
+    } catch (error) {
+      showAccountError("This browser could not keep you logged in.");
+      return;
+    }
+    el.accountForm.reset();
+    el.accountError.hidden = true;
+    applyPersonalization();
+    renderAccountState();
+    saveAll();
+    closeDialog(el.accountDialog);
+    showToast(message);
+  }
+
+  async function createDeviceAccount() {
+    const credentials = readAccountCredentials();
+    if (!credentials) return;
+    const accounts = readDeviceAccounts();
+    if (accounts[credentials.key]) {
+      showAccountError("That account name already exists on this device. Try logging in.");
+      return;
+    }
+    try {
+      const salt = randomSalt();
+      const account = {
+        displayName: credentials.displayName,
+        salt,
+        passcodeHash: await hashPasscode(credentials.passcode, salt),
+        wallpaper: "paper",
+        decoration: "none",
+        createdAt: new Date().toISOString()
+      };
+      accounts[credentials.key] = account;
+      if (!writeDeviceAccounts(accounts)) return;
+      finishAccountLogin(credentials.key, account, "Account created. Personalization is now unlocked.");
+    } catch (error) {
+      showAccountError("This browser could not create the account. Try a modern browser.");
+    }
+  }
+
+  async function loginDeviceAccount(event) {
+    event.preventDefault();
+    const credentials = readAccountCredentials();
+    if (!credentials) return;
+    const account = readDeviceAccounts()[credentials.key];
+    if (!account) {
+      showAccountError("No account with that name exists on this device.");
+      return;
+    }
+    try {
+      const hash = await hashPasscode(credentials.passcode, account.salt);
+      if (hash !== account.passcodeHash) {
+        showAccountError("The passcode is not correct.");
+        return;
+      }
+      finishAccountLogin(credentials.key, account, `Welcome back, ${account.displayName}.`);
+    } catch (error) {
+      showAccountError("This browser could not log in. Try a modern browser.");
+    }
+  }
+
+  function openAccount() {
+    el.accountError.hidden = true;
+    el.accountForm.reset();
+    renderAccountState();
+    openDialog(el.accountDialog);
+  }
+
+  function logoutDeviceAccount() {
+    state.activeAccount = null;
+    state.wallpaper = "paper";
+    state.decoration = "none";
+    try {
+      localStorage.removeItem(ACTIVE_ACCOUNT_KEY);
+    } catch (error) {
+      // The visual logout still applies for this visit.
+    }
+    applyPersonalization();
+    renderAccountState();
+    showToast("Logged out. Your piano and saved idea are still available.");
+  }
+
   function openSettings() {
     el.profileName.value = state.profileName;
     el.ideaTitle.value = state.ideaTitle === "Untitled idea" ? "" : state.ideaTitle;
+    el.wallpaper.value = state.wallpaper;
+    el.decoration.value = state.decoration;
     el.bindingsError.hidden = true;
+    renderAccountState();
     renderBindings();
     openDialog(el.settingsDialog);
   }
@@ -2188,11 +2537,17 @@
     state.profileName = el.profileName.value.trim().slice(0, 40);
     state.ideaTitle = el.ideaTitle.value.trim().slice(0, 60) || "Untitled idea";
     state.bindings = nextBindings;
+    if (state.activeAccount) {
+      state.wallpaper = WALLPAPER_OPTIONS.includes(el.wallpaper.value) ? el.wallpaper.value : "paper";
+      state.decoration = DECORATION_OPTIONS.includes(el.decoration.value) ? el.decoration.value : "none";
+      saveAccountPreferences();
+      applyPersonalization();
+    }
     saveAll();
     renderPiano();
     renderScore();
     closeDialog(el.settingsDialog);
-    showToast("Settings saved. Piano labels are updated.");
+    showToast("Settings saved. Piano labels and personal style are updated.");
   }
 
   function noteListText() {
@@ -2568,7 +2923,7 @@
       imported.timelineEndBeat || 0,
       ...state.notes.map((note) => note.startBeat + note.durationBeats)
     );
-    state.selectedId = null;
+    state.selectedKeys.clear();
     resetRecordingClock();
     renderPiano();
     renderBindings();
@@ -2641,8 +2996,11 @@
         toggleRecording();
         return;
       }
-      const key = normalizeBinding(event.key);
-      const note = notesInRange.find((item) => state.bindings[item.note] === key)?.note;
+      const possibleBindings = new Set([
+        normalizeBinding(event.key),
+        bindingFromPhysicalCode(event.code)
+      ].filter(Boolean));
+      const note = notesInRange.find((item) => possibleBindings.has(state.bindings[item.note]))?.note;
       if (!note || activeKeyboard.has(event.code)) return;
       event.preventDefault();
       const source = `keyboard:${event.code}`;
@@ -2666,22 +3024,28 @@
     el.playScore.addEventListener("click", playComposition);
     el.undo.addEventListener("click", undo);
     el.redo.addEventListener("click", redo);
-    el.deleteNote.addEventListener("click", deleteSelectedNote);
+    el.deleteNote.addEventListener("click", deleteSelectedItems);
+    el.clearSelection.addEventListener("click", () => {
+      state.selectedKeys.clear();
+      renderScore();
+      el.staff.focus();
+    });
     el.clearScore.addEventListener("click", clearComposition);
     el.importOpen.addEventListener("click", () => el.importFile.click());
     el.importFile.addEventListener("change", importScoreFile);
     el.exportOpen.addEventListener("click", openExport);
     el.staff.addEventListener("click", (event) => {
-      const noteButton = event.target.closest(".score-note, .score-hit-target");
-      if (!noteButton) return;
-      state.selectedId = state.selectedId === noteButton.dataset.id ? null : noteButton.dataset.id;
+      const target = event.target.closest(".score-hit-target");
+      const selectionKey = target?.dataset.selectionKey;
+      if (!selectionKey) return;
+      if (state.selectedKeys.has(selectionKey)) state.selectedKeys.delete(selectionKey);
+      else state.selectedKeys.add(selectionKey);
       renderScore();
-      if (state.selectedId) el.deleteNote.focus();
     });
     el.staff.addEventListener("keydown", (event) => {
-      if ((event.key === "Delete" || event.key === "Backspace") && state.selectedId) {
+      if ((event.key === "Delete" || event.key === "Backspace") && state.selectedKeys.size) {
         event.preventDefault();
-        deleteSelectedNote();
+        deleteSelectedItems();
       }
     });
     el.instrumentSelect.addEventListener("change", () => {
@@ -2727,6 +3091,15 @@
     el.settingsClose.addEventListener("click", () => closeDialog(el.settingsDialog));
     el.settingsCancel.addEventListener("click", () => closeDialog(el.settingsDialog));
     el.settingsForm.addEventListener("submit", saveSettings);
+    el.accountOpen.addEventListener("click", openAccount);
+    el.accountClose.addEventListener("click", () => closeDialog(el.accountDialog));
+    el.accountForm.addEventListener("submit", loginDeviceAccount);
+    el.accountCreate.addEventListener("click", createDeviceAccount);
+    el.accountLogout.addEventListener("click", logoutDeviceAccount);
+    el.settingsSignIn.addEventListener("click", () => {
+      closeDialog(el.settingsDialog);
+      openAccount();
+    });
     el.resetBindings.addEventListener("click", () => {
       renderBindings(defaultBindingMap);
       el.bindingsError.hidden = true;
@@ -2766,9 +3139,12 @@
 
   function initialize() {
     loadSavedState();
+    loadActiveAccount();
+    applyPersonalization();
     renderPiano();
     renderBindings();
     bindEvents();
+    renderAccountState();
     el.instrumentSelect.value = state.instrument;
     el.instrumentTitle.textContent = instrumentLabel();
     el.volume.value = String(state.volume);
