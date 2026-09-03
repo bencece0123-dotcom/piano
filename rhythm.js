@@ -13,6 +13,18 @@
     { count: 5, notesOccupied: 4, baseSlug: "sixteenth", baseDuration: 0.25 },
     { count: 3, notesOccupied: 2, baseSlug: "eighth", baseDuration: 0.5 }
   ];
+  const REST_VALUES = [
+    { beats: 4, name: "whole note", slug: "whole", dotted: false },
+    { beats: 3, name: "dotted half note", slug: "dotted-half", dotted: true },
+    { beats: 2, name: "half note", slug: "half", dotted: false },
+    { beats: 1.5, name: "dotted quarter note", slug: "dotted-quarter", dotted: true },
+    { beats: 1, name: "quarter note", slug: "quarter", dotted: false },
+    { beats: 0.75, name: "dotted eighth note", slug: "dotted-eighth", dotted: true },
+    { beats: 0.5, name: "eighth note", slug: "eighth", dotted: false },
+    { beats: 0.375, name: "dotted sixteenth note", slug: "dotted-sixteenth", dotted: true },
+    { beats: 0.25, name: "sixteenth note", slug: "sixteenth", dotted: false },
+    { beats: 0.125, name: "thirty-second note", slug: "thirty-second", dotted: false }
+  ];
 
   function cleanBeat(value) {
     return Math.round(value * 1000000) / 1000000;
@@ -20,6 +32,61 @@
 
   function quantizeStraight(value, step = STRAIGHT_STEP) {
     return cleanBeat(Math.round(value / step) * step);
+  }
+
+  function isAligned(value, unit) {
+    return Math.abs(value / unit - Math.round(value / unit)) < 0.001;
+  }
+
+  function restValueFits(spec, positionInMeasure, capacity, numerator, denominator) {
+    if (positionInMeasure + spec.beats > capacity + 0.001) return false;
+    if (!spec.dotted) return isAligned(positionInMeasure, spec.beats);
+
+    const baseValue = spec.beats / 1.5;
+    const endPosition = positionInMeasure + spec.beats;
+    const touchesNaturalBoundary = isAligned(positionInMeasure, baseValue) || isAligned(endPosition, baseValue);
+    if (!touchesNaturalBoundary) return false;
+
+    const compoundBeat = denominator === 8 && numerator >= 6 && numerator % 3 === 0 ? 1.5 : null;
+    if (!compoundBeat) return true;
+    if (Math.abs(spec.beats - compoundBeat) < 0.001) return isAligned(positionInMeasure, compoundBeat);
+    if (spec.beats > compoundBeat) return false;
+    const groupEnd = (Math.floor((positionInMeasure + 0.001) / compoundBeat) + 1) * compoundBeat;
+    return endPosition <= groupEnd + 0.001;
+  }
+
+  function splitRestDuration(startBeat, durationBeats, timeSignature = "4/4") {
+    const [numerator, denominator] = String(timeSignature).split("/").map(Number);
+    const safeNumerator = Number.isFinite(numerator) && numerator > 0 ? numerator : 4;
+    const safeDenominator = Number.isFinite(denominator) && denominator > 0 ? denominator : 4;
+    const capacity = safeNumerator * (4 / safeDenominator);
+    const segments = [];
+    let cursor = cleanBeat(startBeat);
+    let remaining = Math.max(0, quantizeStraight(durationBeats));
+
+    while (remaining > 0.001) {
+      const positionInMeasure = cleanBeat(((cursor % capacity) + capacity) % capacity);
+      if (positionInMeasure < 0.001 && remaining >= capacity - 0.001) {
+        segments.push({
+          startBeat: cursor,
+          spec: { beats: capacity, name: "whole-measure", slug: "measure", dotted: false, fullMeasure: true }
+        });
+        cursor = quantizeStraight(cursor + capacity);
+        remaining = quantizeStraight(remaining - capacity);
+        continue;
+      }
+
+      const toBarline = positionInMeasure < 0.001 ? capacity : capacity - positionInMeasure;
+      const available = Math.min(remaining, toBarline);
+      const spec = REST_VALUES.find((candidate) => (
+        candidate.beats <= available + 0.001
+        && restValueFits(candidate, positionInMeasure, capacity, safeNumerator, safeDenominator)
+      )) || REST_VALUES.at(-1);
+      segments.push({ startBeat: cursor, spec: { ...spec } });
+      cursor = quantizeStraight(cursor + spec.beats);
+      remaining = quantizeStraight(remaining - spec.beats);
+    }
+    return segments;
   }
 
   function matchesTuplet(groups, beatStart, pattern) {
@@ -91,8 +158,10 @@
   return {
     STRAIGHT_STEP,
     TUPLET_PATTERNS,
+    REST_VALUES,
     cleanBeat,
     quantizeStraight,
+    splitRestDuration,
     recognizeOnsets
   };
 });

@@ -1230,6 +1230,9 @@
   }
 
   function splitRestDuration(startBeat, durationBeats) {
+    if (window.MelodyRhythm?.splitRestDuration) {
+      return window.MelodyRhythm.splitRestDuration(startBeat, durationBeats, state.timeSignature);
+    }
     const capacity = measureCapacity();
     const { numerator, denominator } = timeSignatureParts();
     const compoundBeat = denominator === 8 && numerator >= 6 && numerator % 3 === 0 ? 1.5 : null;

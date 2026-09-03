@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { recognizeOnsets } = require("../rhythm.js");
+const { recognizeOnsets, splitRestDuration } = require("../rhythm.js");
 
 function recognize(values) {
   return recognizeOnsets(values.map((rawStartBeat, index) => ({ id: `n${index}`, rawStartBeat })));
@@ -42,4 +42,32 @@ test("supports sextuplets and septuplets", () => {
   const septuplet = recognize([1, 1.14, 1.29, 1.43, 1.57, 1.71, 1.86]);
   assert.ok(sextuplet.every((item) => item.tuplet?.count === 6));
   assert.ok(septuplet.every((item) => item.tuplet?.count === 7));
+});
+
+test("combines a three-sixteenth silence into one dotted eighth rest", () => {
+  const result = splitRestDuration(0.25, 0.75, "4/4");
+  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-eighth"]);
+});
+
+test("uses the fewest readable rests after a thirty-second note", () => {
+  const result = splitRestDuration(0.125, 0.875, "4/4");
+  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-sixteenth", "eighth"]);
+});
+
+test("centers a full-measure rest instead of splitting it", () => {
+  const result = splitRestDuration(0, 4, "4/4");
+  assert.equal(result.length, 1);
+  assert.equal(result[0].spec.fullMeasure, true);
+});
+
+test("never combines a rest across a barline", () => {
+  const result = splitRestDuration(3, 2, "4/4");
+  assert.deepEqual(result.map((item) => [item.startBeat, item.spec.beats]), [[3, 1], [4, 1]]);
+});
+
+test("keeps dotted-quarter rests inside compound-meter beat groups", () => {
+  const grouped = splitRestDuration(0, 1.5, "6/8");
+  const ungrouped = splitRestDuration(0.5, 1.5, "6/8");
+  assert.deepEqual(grouped.map((item) => item.spec.slug), ["dotted-quarter"]);
+  assert.notDeepEqual(ungrouped.map((item) => item.spec.slug), ["dotted-quarter"]);
 });
