@@ -34,39 +34,133 @@
     return cleanBeat(Math.round(value / step) * step);
   }
 
-  function eighthNoteGroups(numerator) {
-    if (numerator % 3 === 0) return Array.from({ length: numerator / 3 }, () => 1.5);
-    if (numerator === 5) return [1, 1.5];
-    if (numerator === 7) return [1, 1, 1.5];
-    if (numerator === 8) return [2, 2];
-    return [numerator / 2];
+  const EPSILON = 0.001;
+
+  function repeated(value, count) {
+    return Array.from({ length: count }, () => value);
   }
 
-  function restValueFits(spec, positionInMeasure, capacity, numerator, denominator) {
-    if (positionInMeasure + spec.beats > capacity + 0.001) return false;
-    if (denominator !== 8) return true;
+  function meterRestProfile(numerator, denominator) {
+    const signature = `${numerator}/${denominator}`;
+    const capacity = numerator * (4 / denominator);
+    const profiles = {
+      // The half-bar is a significant boundary in simple quadruple time.
+      "4/4": { majorGroups: [2, 2], pulses: repeated(1, 4), simple: true },
+      "2/2": { majorGroups: [2, 2], pulses: [2, 2], simple: true },
+      // Simple triple time keeps all three beats visible.
+      "3/4": { majorGroups: [1, 1, 1], pulses: repeated(1, 3), simple: true },
+      "2/4": { majorGroups: [1, 1], pulses: [1, 1], simple: true },
+      // Compound meters are read in dotted-quarter pulses. In 12/8, two
+      // adjacent pulses may be represented by one dotted-half rest, but the
+      // middle of the bar remains visible.
+      "6/8": { majorGroups: [1.5, 1.5], pulses: [1.5, 1.5], simple: false },
+      "9/8": { majorGroups: [1.5, 1.5, 1.5], pulses: repeated(1.5, 3), simple: false },
+      "12/8": { majorGroups: [3, 3], pulses: repeated(1.5, 4), simple: false },
+      // A conventional default grouping is used for irregular meters.
+      "5/4": { majorGroups: [3, 2], pulses: repeated(1, 5), simple: false },
+      "7/4": { majorGroups: [2, 2, 3], pulses: repeated(1, 7), simple: false },
+      "3/8": { majorGroups: [0.5, 0.5, 0.5], pulses: repeated(0.5, 3), simple: true },
+      "5/8": { majorGroups: [1, 1.5], pulses: [1, 1.5], simple: false },
+      "7/8": { majorGroups: [1, 1, 1.5], pulses: [1, 1, 1.5], simple: false },
+      "8/8": { majorGroups: [1.5, 1.5, 1], pulses: [1.5, 1.5, 1], simple: false }
+    };
+    return { capacity, ...(profiles[signature] || {
+      majorGroups: repeated(4 / denominator, numerator),
+      pulses: repeated(4 / denominator, numerator),
+      simple: numerator < 6 || numerator % 3 !== 0
+    }) };
+  }
 
-    const groups = eighthNoteGroups(numerator);
-    let groupEnd = 0;
-    for (const groupLength of groups) {
-      groupEnd += groupLength;
-      if (positionInMeasure < groupEnd - 0.001) break;
+  function regionAt(position, groups) {
+    let start = 0;
+    for (const length of groups) {
+      const end = cleanBeat(start + length);
+      if (position < end - EPSILON) return { start, end, length };
+      start = end;
     }
-    return positionInMeasure + spec.beats <= groupEnd + 0.001;
+    const length = groups.at(-1) || 1;
+    return { start: cleanBeat(start - length), end: start, length };
+  }
+
+  function near(first, second) {
+    return Math.abs(first - second) <= EPSILON;
+  }
+
+  function aligned(value, unit) {
+    return near(value / unit, Math.round(value / unit));
+  }
+
+  function restValueFits(spec, positionInMeasure, profile) {
+    const end = cleanBeat(positionInMeasure + spec.beats);
+    if (end > profile.capacity + EPSILON) return false;
+
+    const major = regionAt(positionInMeasure, profile.majorGroups);
+    if (end > major.end + EPSILON) return false;
+
+    const pulse = regionAt(positionInMeasure, profile.pulses);
+    if (spec.beats > pulse.length + EPSILON) {
+      // Longer rests may join complete pulses only from an edge of their
+      // notated meter group. Dotted rests longer than one pulse are avoided
+      // in simple time because they hide the beat hierarchy.
+      if (profile.simple && spec.dotted) return false;
+      const touchesGroupEdge = near(positionInMeasure, major.start) || near(end, major.end);
+      return touchesGroupEdge && profile.pulses.some((_, index) => {
+        const boundary = cleanBeat(profile.pulses.slice(0, index + 1).reduce((sum, value) => sum + value, 0));
+        return near(end, boundary);
+      });
+    }
+
+    if (near(spec.beats, pulse.length)) return near(positionInMeasure, pulse.start);
+    if (end > pulse.end + EPSILON) return false;
+
+    const startInPulse = cleanBeat(positionInMeasure - pulse.start);
+    const endInPulse = cleanBeat(end - pulse.start);
+    if (spec.dotted) {
+      // A dotted sub-beat rest is readable at the start or end of its pulse;
+      // never let it float across an internal subdivision.
+      return near(startInPulse, 0) || near(endInPulse, pulse.length);
+    }
+    return near(startInPulse, 0)
+      || near(endInPulse, pulse.length)
+      || aligned(startInPulse, spec.beats);
+  }
+
+  function bestRestSequence(startBeat, durationBeats, profile) {
+    const totalUnits = Math.round(durationBeats / STRAIGHT_STEP);
+    const memo = new Map();
+    const solve = (usedUnits) => {
+      if (usedUnits === totalUnits) return [];
+      if (memo.has(usedUnits)) return memo.get(usedUnits);
+      const cursor = cleanBeat(startBeat + usedUnits * STRAIGHT_STEP);
+      let best = null;
+      for (const spec of REST_VALUES) {
+        const valueUnits = Math.round(spec.beats / STRAIGHT_STEP);
+        if (usedUnits + valueUnits > totalUnits) continue;
+        if (!restValueFits(spec, cursor, profile)) continue;
+        const tail = solve(usedUnits + valueUnits);
+        if (!tail) continue;
+        const candidate = [{ startBeat: cursor, spec: { ...spec } }, ...tail];
+        if (!best || candidate.length < best.length) best = candidate;
+      }
+      memo.set(usedUnits, best);
+      return best;
+    };
+    return solve(0) || [];
   }
 
   function splitRestDuration(startBeat, durationBeats, timeSignature = "4/4") {
     const [numerator, denominator] = String(timeSignature).split("/").map(Number);
     const safeNumerator = Number.isFinite(numerator) && numerator > 0 ? numerator : 4;
     const safeDenominator = Number.isFinite(denominator) && denominator > 0 ? denominator : 4;
-    const capacity = safeNumerator * (4 / safeDenominator);
+    const profile = meterRestProfile(safeNumerator, safeDenominator);
+    const { capacity } = profile;
     const segments = [];
     let cursor = cleanBeat(startBeat);
     let remaining = Math.max(0, quantizeStraight(durationBeats));
 
-    while (remaining > 0.001) {
+    while (remaining > EPSILON) {
       const positionInMeasure = cleanBeat(((cursor % capacity) + capacity) % capacity);
-      if (positionInMeasure < 0.001 && remaining >= capacity - 0.001) {
+      if (positionInMeasure < EPSILON && remaining >= capacity - EPSILON) {
         segments.push({
           startBeat: cursor,
           spec: { beats: capacity, name: "whole-measure", slug: "measure", dotted: false, fullMeasure: true }
@@ -76,15 +170,15 @@
         continue;
       }
 
-      const toBarline = positionInMeasure < 0.001 ? capacity : capacity - positionInMeasure;
-      const available = Math.min(remaining, toBarline);
-      const spec = REST_VALUES.find((candidate) => (
-        candidate.beats <= available + 0.001
-        && restValueFits(candidate, positionInMeasure, capacity, safeNumerator, safeDenominator)
-      )) || REST_VALUES.at(-1);
-      segments.push({ startBeat: cursor, spec: { ...spec } });
-      cursor = quantizeStraight(cursor + spec.beats);
-      remaining = quantizeStraight(remaining - spec.beats);
+      const toBarline = positionInMeasure < EPSILON ? capacity : capacity - positionInMeasure;
+      const chunkDuration = Math.min(remaining, toBarline);
+      const chunk = bestRestSequence(positionInMeasure, chunkDuration, profile);
+      chunk.forEach((segment) => segments.push({
+        startBeat: cleanBeat(cursor + segment.startBeat - positionInMeasure),
+        spec: segment.spec
+      }));
+      cursor = quantizeStraight(cursor + chunkDuration);
+      remaining = quantizeStraight(remaining - chunkDuration);
     }
     return segments;
   }
@@ -159,6 +253,7 @@
     STRAIGHT_STEP,
     TUPLET_PATTERNS,
     REST_VALUES,
+    meterRestProfile,
     cleanBeat,
     quantizeStraight,
     splitRestDuration,
