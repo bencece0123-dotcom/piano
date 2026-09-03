@@ -34,25 +34,25 @@
     return cleanBeat(Math.round(value / step) * step);
   }
 
-  function isAligned(value, unit) {
-    return Math.abs(value / unit - Math.round(value / unit)) < 0.001;
+  function eighthNoteGroups(numerator) {
+    if (numerator % 3 === 0) return Array.from({ length: numerator / 3 }, () => 1.5);
+    if (numerator === 5) return [1, 1.5];
+    if (numerator === 7) return [1, 1, 1.5];
+    if (numerator === 8) return [2, 2];
+    return [numerator / 2];
   }
 
   function restValueFits(spec, positionInMeasure, capacity, numerator, denominator) {
     if (positionInMeasure + spec.beats > capacity + 0.001) return false;
-    if (!spec.dotted) return isAligned(positionInMeasure, spec.beats);
+    if (denominator !== 8) return true;
 
-    const baseValue = spec.beats / 1.5;
-    const endPosition = positionInMeasure + spec.beats;
-    const touchesNaturalBoundary = isAligned(positionInMeasure, baseValue) || isAligned(endPosition, baseValue);
-    if (!touchesNaturalBoundary) return false;
-
-    const compoundBeat = denominator === 8 && numerator >= 6 && numerator % 3 === 0 ? 1.5 : null;
-    if (!compoundBeat) return true;
-    if (Math.abs(spec.beats - compoundBeat) < 0.001) return isAligned(positionInMeasure, compoundBeat);
-    if (spec.beats > compoundBeat) return false;
-    const groupEnd = (Math.floor((positionInMeasure + 0.001) / compoundBeat) + 1) * compoundBeat;
-    return endPosition <= groupEnd + 0.001;
+    const groups = eighthNoteGroups(numerator);
+    let groupEnd = 0;
+    for (const groupLength of groups) {
+      groupEnd += groupLength;
+      if (positionInMeasure < groupEnd - 0.001) break;
+    }
+    return positionInMeasure + spec.beats <= groupEnd + 0.001;
   }
 
   function splitRestDuration(startBeat, durationBeats, timeSignature = "4/4") {

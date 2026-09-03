@@ -51,7 +51,17 @@ test("combines a three-sixteenth silence into one dotted eighth rest", () => {
 
 test("uses the fewest readable rests after a thirty-second note", () => {
   const result = splitRestDuration(0.125, 0.875, "4/4");
-  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-sixteenth", "eighth"]);
+  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-eighth", "thirty-second"]);
+});
+
+test("combines silence into one dotted quarter even when it starts between beats", () => {
+  const result = splitRestDuration(0.5, 1.5, "4/4");
+  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-quarter"]);
+});
+
+test("combines three beats at the end of a four-four measure", () => {
+  const result = splitRestDuration(1, 3, "4/4");
+  assert.deepEqual(result.map((item) => item.spec.slug), ["dotted-half"]);
 });
 
 test("centers a full-measure rest instead of splitting it", () => {
