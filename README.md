@@ -3,7 +3,8 @@
 A no-build online piano that records performances as engraved sheet music.
 
 - Play 15 white keys and 10 black keys in selectable ranges from C1–C3 through C5–C7.
-- Keep time with an optional visual metronome that follows the selected tempo and time signature.
+- Keep time with an optional audible and visual metronome that follows the selected tempo and time signature.
+- Align new recordings to the metronome grid, and shift the playable range by one octave with `-` and `=`.
 - Select and delete several notes or real silent gaps in one action.
 - Optionally create a browser-only device account for saved wallpapers and decorations; playing never requires login.
 - Import standard `.musicxml` / `.xml` scores or editable `.melody.json` project files.

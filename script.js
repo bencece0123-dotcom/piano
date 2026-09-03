@@ -186,6 +186,7 @@
   let metronomeTimer = null;
   let metronomeBeatIndex = 0;
   let metronomeNextTickAt = 0;
+  let metronomeTimelineAnchor = null;
   let scoreRenderFrame = null;
   let scoreShouldFollow = false;
 
@@ -208,6 +209,10 @@
 
   function normalizeBinding(value) {
     return value.length === 1 ? value.toLowerCase() : "";
+  }
+
+  function isReservedBinding(value) {
+    return [" ", "-", "="].includes(value);
   }
 
   function bindingFromPhysicalCode(code) {
@@ -428,11 +433,36 @@
     el.metronomeCount.textContent = `Ready · ${numerator} ${numerator === 1 ? "beat" : "beats"}`;
   }
 
+  function nextMeasureBoundary() {
+    const nextBeat = nextCompositionBeat();
+    const capacity = measureCapacity();
+    if (nextBeat <= 0.001) return 0;
+    const remainder = cleanBeat(nextBeat % capacity);
+    return remainder <= 0.001 || Math.abs(remainder - capacity) <= 0.001
+      ? nextBeat
+      : cleanBeat(nextBeat + capacity - remainder);
+  }
+
   function paintMetronomeBeat(index) {
     const beats = [...el.metronomeBeats.children];
     beats.forEach((beat, beatIndex) => beat.classList.toggle("is-current", beatIndex === index));
     const { numerator } = timeSignatureParts();
     el.metronomeCount.textContent = `Beat ${index + 1} of ${numerator} · ${beatUnitName()}`;
+  }
+
+  function playMetronomeClick(accent) {
+    if (!audioContext || audioContext.state !== "running" || !masterGain) return;
+    const now = audioContext.currentTime;
+    const oscillator = audioContext.createOscillator();
+    const clickGain = audioContext.createGain();
+    oscillator.type = "square";
+    oscillator.frequency.setValueAtTime(accent ? 1320 : 880, now);
+    clickGain.gain.setValueAtTime(0.0001, now);
+    clickGain.gain.exponentialRampToValueAtTime(accent ? 0.18 : 0.1, now + 0.003);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.055);
+    oscillator.connect(clickGain).connect(masterGain);
+    oscillator.start(now);
+    oscillator.stop(now + 0.06);
   }
 
   function scheduleMetronomeTick() {
@@ -442,6 +472,7 @@
       if (!metronomeEnabled || document.hidden) return;
       const { numerator } = timeSignatureParts();
       paintMetronomeBeat(metronomeBeatIndex);
+      playMetronomeClick(metronomeBeatIndex === 0);
       metronomeBeatIndex = (metronomeBeatIndex + 1) % numerator;
       metronomeNextTickAt += beatDurationMs();
       const now = performance.now();
@@ -457,24 +488,44 @@
   function restartMetronomeClock() {
     clearMetronomeTimer();
     if (!metronomeEnabled || document.hidden) return;
+    const startedAt = performance.now();
     metronomeBeatIndex = 0;
-    metronomeNextTickAt = performance.now();
+    metronomeNextTickAt = startedAt;
+    metronomeTimelineAnchor = {
+      startedAt,
+      startBeat: nextMeasureBoundary()
+    };
+    if (state.recording && !state.playing) {
+      resetRecordingClock();
+      recordingClock = { ...metronomeTimelineAnchor };
+    }
     scheduleMetronomeTick();
   }
 
-  function setMetronomeEnabled(enabled, announce = true) {
+  async function setMetronomeEnabled(enabled, announce = true) {
     metronomeEnabled = enabled;
     el.metronomeToggle.classList.toggle("is-on", enabled);
     el.metronomeToggle.setAttribute("aria-pressed", String(enabled));
-    el.metronomeToggle.setAttribute("aria-label", `${enabled ? "Stop" : "Start"} visual metronome`);
+    el.metronomeToggle.setAttribute("aria-label", `${enabled ? "Stop" : "Start"} metronome`);
     el.metronomeToggleLabel.textContent = enabled ? "Stop" : "Start";
     if (enabled) {
+      const soundReadyPromise = ensureAudio();
       restartMetronomeClock();
-      if (announce) showToast(`Visual metronome started at ${state.tempo} BPM.`);
+      const soundReady = await soundReadyPromise;
+      if (!metronomeEnabled) return;
+      if (announce) {
+        const syncMessage = state.recording
+          ? " The recording grid is synced."
+          : " Resume recording to sync it from the next downbeat.";
+        showToast(soundReady
+          ? `Metronome sound and pulse started at ${state.tempo} BPM.${syncMessage}`
+          : `Visual metronome started at ${state.tempo} BPM. Sound is unavailable.${syncMessage}`, soundReady ? "success" : "error");
+      }
     } else {
       clearMetronomeTimer();
+      metronomeTimelineAnchor = null;
       renderMetronomeBeats();
-      if (announce) showToast("Visual metronome stopped.");
+      if (announce) showToast("Metronome stopped.");
     }
   }
 
@@ -527,9 +578,9 @@
     if (hasHeldCompanion && elapsed >= 0 && elapsed <= CHORD_WINDOW_MS) {
       return currentOnsetWindow;
     }
-    if (!recordingClock) {
-      recordingClock = { startedAt, startBeat: nextCompositionBeat() };
-    }
+    if (!recordingClock) recordingClock = metronomeEnabled && metronomeTimelineAnchor
+      ? { ...metronomeTimelineAnchor }
+      : { startedAt, startBeat: nextCompositionBeat() };
     const rawStartBeat = cleanBeat(
       recordingClock.startBeat + quarterUnitsFromMs(startedAt - recordingClock.startedAt)
     );
@@ -757,7 +808,7 @@
           const value = normalizeBinding(String(parsed.bindings[note] || ""));
           candidate[note] = value || defaultBindingMap[note];
         });
-        if (new Set(Object.values(candidate)).size === notesInRange.length && !Object.values(candidate).includes(" ")) {
+        if (new Set(Object.values(candidate)).size === notesInRange.length && !Object.values(candidate).some(isReservedBinding)) {
           state.bindings = candidate;
         }
       }
@@ -2302,6 +2353,7 @@
   function toggleRecording() {
     state.recording = !state.recording;
     resetRecordingClock();
+    if (state.recording && metronomeEnabled) restartMetronomeClock();
     updateStatus();
     showToast(state.recording ? "Recording resumed." : "Recording paused. You can still play freely.");
   }
@@ -2591,7 +2643,7 @@
     el.bindingsGrid.querySelectorAll(".binding-input").forEach((input) => {
       const raw = normalizeBinding(input.dataset.raw || input.value);
       const note = input.dataset.note;
-      if (!raw || raw === " ") firstProblem ||= `Choose a printable key for ${displayNote(note)}. Space is reserved for recording.`;
+      if (!raw || isReservedBinding(raw)) firstProblem ||= `Choose another printable key for ${displayNote(note)}. Space, −, and = are reserved controls.`;
       if (raw && used.has(raw)) firstProblem ||= `${formatBinding(raw)} is assigned to both ${displayNote(used.get(raw))} and ${displayNote(note)}.`;
       if (raw) used.set(raw, note);
       nextBindings[note] = raw;
@@ -2989,7 +3041,7 @@
     state.ideaTitle = imported.ideaTitle;
     if (imported.bindings && typeof imported.bindings === "object") {
       const values = notesInRange.map((item, index) => normalizeBinding(String(imported.bindings[item.note] || "")) || DEFAULT_BINDINGS[index]);
-      if (new Set(values).size === values.length && !values.includes(" ")) {
+      if (new Set(values).size === values.length && !values.some(isReservedBinding)) {
         state.bindings = Object.fromEntries(notesInRange.map((item, index) => [item.note, values[index]]));
       }
     }
@@ -3041,6 +3093,25 @@
     return target.closest("input, textarea, select, button, dialog, [contenteditable='true']");
   }
 
+  function shiftPianoOctave(direction) {
+    const currentIndex = RANGE_OPTIONS.indexOf(state.range);
+    const nextIndex = Math.max(0, Math.min(RANGE_OPTIONS.length - 1, currentIndex + direction));
+    if (nextIndex === currentIndex) {
+      showToast(direction < 0 ? "The piano is already at its lowest range." : "The piano is already at its highest range.");
+      return;
+    }
+    stopAllNotes();
+    applyRange(RANGE_OPTIONS[nextIndex], true);
+    el.range.value = state.range;
+    renderPiano();
+    renderBindings();
+    saveAll();
+    requestAnimationFrame(() => {
+      el.pianoWrap.scrollLeft = Math.max(0, (el.pianoWrap.scrollWidth - el.pianoWrap.clientWidth) / 2);
+    });
+    showToast(`Piano shifted ${direction < 0 ? "down" : "up"} to ${rangeLabel()}.`);
+  }
+
   function bindEvents() {
     el.piano.addEventListener("pointerdown", (event) => {
       const key = event.target.closest("[data-note]");
@@ -3068,6 +3139,11 @@
       if (event.code === "Space") {
         event.preventDefault();
         toggleRecording();
+        return;
+      }
+      if (event.code === "Minus" || event.code === "Equal") {
+        event.preventDefault();
+        shiftPianoOctave(event.code === "Minus" ? -1 : 1);
         return;
       }
       const possibleBindings = new Set([
