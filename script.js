@@ -900,10 +900,8 @@
     staffByRecordedNote.clear();
     groups.forEach((group) => {
       const midis = group.notes.map((note) => note.midi);
-      const lowest = Math.min(...midis);
-      const highest = Math.max(...midis);
-      const isCompactChord = group.notes.length > 1 && highest - lowest <= 12;
-      const sharedStaff = isCompactChord && !group.notes.some((note) => note.preferredStaff)
+      const isRecordedChord = group.notes.length > 1 && !group.notes.some((note) => note.preferredStaff);
+      const sharedStaff = isRecordedChord
         ? (midis.reduce((sum, midi) => sum + midi, 0) / midis.length < 60 ? "bass" : "treble")
         : null;
       group.notes.forEach((note) => {
@@ -2120,10 +2118,11 @@
     activeVoices.set(note, { oscillators, gain: voiceGain });
   }
 
-  function queueKeyboardVoice(note) {
+  function queueKeyboardVoice(note, inputStartedAt = performance.now()) {
     if (!keyboardAudioBatch) {
       keyboardAudioBatch = {
         notes: new Set(),
+        startedAt: inputStartedAt,
         audioReady: ensureAudio(),
         timer: null
       };
@@ -2138,6 +2137,7 @@
       }, CHORD_WINDOW_MS);
     }
     keyboardAudioBatch.notes.add(note);
+    return keyboardAudioBatch.startedAt;
   }
 
   function cancelKeyboardAudioBatch() {
@@ -2234,7 +2234,12 @@
     }, delay + 8);
   }
 
-  function recordNote(note, inputStartedAt = performance.now(), silenceDurationMs = null) {
+  function recordNote(
+    note,
+    inputStartedAt = performance.now(),
+    silenceDurationMs = null,
+    onsetStartedAt = inputStartedAt
+  ) {
     if (!state.recording || state.playing) return;
     cancelSilentMeasureTimer();
     pushHistory();
@@ -2242,7 +2247,7 @@
     const hasHeldCompanion = [...activeSources.entries()].some(
       ([activeNote, sources]) => activeNote !== note && sources.size > 0
     );
-    const onset = resolveOnset(inputStartedAt, hasHeldCompanion);
+    const onset = resolveOnset(onsetStartedAt, hasHeldCompanion);
     const joinsExistingOnset = state.notes.some((recordedNote) => recordedNote.onsetId === onset.id);
     if (!joinsExistingOnset) {
       activeRecordIds.forEach((activeId) => {
@@ -2318,14 +2323,15 @@
     sources.add(source);
     if (!firstSource) return;
     setKeyActive(note, true);
+    let onsetStartedAt = inputStartedAt;
     if (source.startsWith("keyboard:")) {
-      queueKeyboardVoice(note);
+      onsetStartedAt = queueKeyboardVoice(note, inputStartedAt);
     } else {
       ensureAudio().then((ready) => {
         if (ready && activeSources.get(note)?.size) startVoice(note);
       });
     }
-    if (allowRecording) recordNote(note, inputStartedAt, silenceDurationMs);
+    if (allowRecording) recordNote(note, inputStartedAt, silenceDurationMs, onsetStartedAt);
     silenceStartedAt = null;
   }
 
