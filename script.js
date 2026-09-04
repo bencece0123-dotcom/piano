@@ -4,7 +4,7 @@
   const STORAGE_KEY = "melody-catcher-aic-2026-0017-v1";
   const ACCOUNTS_KEY = "melody-catcher-device-accounts-v1";
   const ACTIVE_ACCOUNT_KEY = "melody-catcher-active-account-v1";
-  const CHORD_WINDOW_MS = 10;
+  const CHORD_WINDOW_MS = 20;
   const BEAT_SPACING = 88;
   const SCORE_START_X = 108;
   const SCORE_END_PADDING = 18;
@@ -2032,7 +2032,7 @@
     const measureCount = hasNotes ? totalMeasures : 0;
     el.scoreMeta.textContent = hasNotes
       ? `${groups.length} ${groups.length === 1 ? "attack" : "attacks"} · ${measureCount} ${measureCount === 1 ? "measure" : "measures"} · C major · ${state.timeSignature} · ${beatUnitName()} = ${state.tempo}`
-      : `C major · ${state.timeSignature} time · ${beatUnitName()} = ${state.tempo} BPM · 10 ms chord window`;
+      : `C major · ${state.timeSignature} time · ${beatUnitName()} = ${state.tempo} BPM · 20 ms chord window`;
     updateStatus();
     el.staff.style.minHeight = "";
     // System heights are fixed, so the final scroll range is available now.
